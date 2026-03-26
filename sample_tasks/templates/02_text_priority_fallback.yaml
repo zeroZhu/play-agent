@@ -1,0 +1,70 @@
+meta:
+  name: Text Priority With Fallback
+  design_resolution: [1280, 720]
+  loop_count: 150
+  random_delay_ms: [60, 130]
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16384
+
+ocr:
+  enabled: true
+  lang: ch
+  min_confidence: 0.60
+
+steps:
+  - id: tap_start_by_text
+    type: find_text_click
+    threshold: 0.85
+    timeout_ms: 5000
+    retry: 1
+    target:
+      text: 开始
+      exact: false
+      min_confidence: 0.62
+    action:
+      random_offset_px: 3
+
+  - id: fallback_by_image
+    type: conditional
+    threshold: 0.88
+    timeout_ms: 3500
+    retry: 0
+    target:
+      mode: image
+      template:
+        - assets/templates/btn_start_backup.png
+    action:
+      on_true:
+        type: tap
+        use_match_center: true
+      on_false:
+        type: wait
+        seconds: 0.4
+
+  - id: next_scene_wait
+    type: wait
+    timeout_ms: 8000
+    retry: 0
+    action:
+      seconds: 2.4
+
+  - id: claim_reward
+    type: find_text_click
+    threshold: 0.82
+    timeout_ms: 6000
+    retry: 2
+    target:
+      text: 领取
+      exact: false
+      min_confidence: 0.60
+    action:
+      random_offset_px: 4
+
+  - id: loop_to_start
+    type: loop
+    target:
+      step_id: tap_start_by_text
+    action:
+      times: 9999

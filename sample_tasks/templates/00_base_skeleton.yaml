@@ -1,0 +1,65 @@
+meta:
+  name: Base Skeleton
+  design_resolution: [1280, 720]
+  loop_count: 9999
+  random_delay_ms: [60, 140]
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16384
+
+ocr:
+  enabled: true
+  lang: ch
+  min_confidence: 0.55
+
+steps:
+  - id: wait_scene_ready
+    type: wait
+    timeout_ms: 3000
+    retry: 0
+    action:
+      seconds: 1.2
+
+  - id: find_image_and_click
+    type: find_image_click
+    threshold: 0.90
+    timeout_ms: 6000
+    retry: 1
+    target:
+      template:
+        - assets/templates/your_button_1.png
+        - assets/templates/your_button_2.png
+      roi: [0, 0, 1280, 720]
+    action:
+      random_offset_px: 4
+      random_delay_ms: [80, 160]
+
+  - id: find_text_and_click
+    type: find_text_click
+    threshold: 0.85
+    timeout_ms: 5000
+    retry: 1
+    target:
+      text: 开始
+      exact: false
+      min_confidence: 0.60
+    action:
+      random_offset_px: 3
+
+  - id: drag_screen
+    type: drag
+    timeout_ms: 3000
+    retry: 0
+    action:
+      from: [1050, 620]
+      to: [250, 620]
+      duration_ms: 450
+      random_offset_px: 5
+
+  - id: jump_back
+    type: loop
+    target:
+      step_id: find_image_and_click
+    action:
+      times: 3

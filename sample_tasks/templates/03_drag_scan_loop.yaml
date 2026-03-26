@@ -1,0 +1,77 @@
+meta:
+  name: Drag Scan Loop
+  design_resolution: [1280, 720]
+  loop_count: 120
+  random_delay_ms: [50, 120]
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16384
+
+ocr:
+  enabled: true
+  lang: ch
+  min_confidence: 0.55
+
+steps:
+  - id: scan_left
+    type: drag
+    timeout_ms: 4000
+    retry: 0
+    action:
+      from: [1020, 620]
+      to: [220, 620]
+      duration_ms: 420
+      random_offset_px: 5
+
+  - id: maybe_target_text
+    type: conditional
+    threshold: 0.85
+    timeout_ms: 3000
+    retry: 0
+    target:
+      mode: text
+      text: 挑战
+      exact: false
+      min_confidence: 0.60
+    action:
+      on_true:
+        type: tap
+        use_match_center: true
+      on_false:
+        type: wait
+        seconds: 0.3
+
+  - id: scan_right
+    type: drag
+    timeout_ms: 4000
+    retry: 0
+    action:
+      from: [260, 620]
+      to: [1060, 620]
+      duration_ms: 420
+      random_offset_px: 5
+
+  - id: maybe_target_image
+    type: conditional
+    threshold: 0.89
+    timeout_ms: 3000
+    retry: 0
+    target:
+      mode: image
+      template:
+        - assets/templates/btn_target.png
+    action:
+      on_true:
+        type: tap
+        use_match_center: true
+      on_false:
+        type: wait
+        seconds: 0.3
+
+  - id: loop_scan
+    type: loop
+    target:
+      step_id: scan_left
+    action:
+      times: 9999

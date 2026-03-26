@@ -1,0 +1,74 @@
+meta:
+  name: Daily Farm Demo
+  design_resolution: [1280, 720]
+  loop_count: 2
+  random_delay_ms: [60, 140]
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16384
+
+ocr:
+  enabled: true
+  lang: ch
+  min_confidence: 0.55
+
+steps:
+  - id: open_battle
+    type: find_image_click
+    threshold: 0.9
+    timeout_ms: 6000
+    retry: 1
+    target:
+      template: assets/templates/battle.png
+    action:
+      random_offset_px: 4
+      random_delay_ms: [80, 150]
+
+  - id: start_text
+    type: find_text_click
+    threshold: 0.85
+    timeout_ms: 5000
+    retry: 1
+    target:
+      text: 开始
+      exact: false
+      min_confidence: 0.6
+    action:
+      random_offset_px: 3
+
+  - id: sweep_drag
+    type: drag
+    timeout_ms: 3000
+    retry: 0
+    action:
+      from: [1030, 620]
+      to: [250, 620]
+      duration_ms: 450
+      random_offset_px: 5
+
+  - id: short_wait
+    type: wait
+    action:
+      seconds: 1.2
+
+  - id: combat_loop
+    type: loop
+    target:
+      step_id: start_text
+    action:
+      times: 2
+
+  - id: maybe_reward
+    type: conditional
+    target:
+      mode: text
+      text: 领奖励
+      min_confidence: 0.6
+    action:
+      on_true:
+        type: tap
+        use_match_center: true
+      on_false:
+        type: wait
+        seconds: 0.5
