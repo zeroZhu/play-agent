@@ -28,13 +28,16 @@ class ADBClient:
     @staticmethod
     def list_devices(adb_path: str = "adb", timeout_sec: int = 10) -> list[DeviceInfo]:
         cmd = [adb_path, "devices"]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise ADBError(f"ADB not found: {adb_path}. Please install ADB or set correct path.")
         if proc.returncode != 0:
             raise ADBError(proc.stderr.strip() or "adb devices failed")
         devices: list[DeviceInfo] = []

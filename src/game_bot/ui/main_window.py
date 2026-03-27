@@ -290,7 +290,10 @@ class MainWindow(QMainWindow):
             devices = ADBClient.list_devices(adb_path=adb_path)
         except ADBError as exc:
             self.device_combo.addItem("")
-            self._append_log(f"[WARN] {exc}")
+            if hasattr(self, "log_view") and self.log_view is not None:
+                self._append_log(f"[WARN] {exc}")
+            else:
+                QMessageBox.warning(self, "ADB Warning", str(exc))
             return
         if not devices:
             self.device_combo.addItem("")

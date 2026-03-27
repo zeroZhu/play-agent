@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b D:\\\\workplace_syzhu\\\\play-agent)",
+      "Bash(\"C:/Program Files/Netease/MuMuPlayer-12.0/nx_main/adb.exe\" version)"
+    ]
+  }
+}

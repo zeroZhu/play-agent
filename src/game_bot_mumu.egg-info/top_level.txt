@@ -1,0 +1,2 @@
+game_bot
+mobile_v2
