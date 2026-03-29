@@ -1,0 +1,122 @@
+meta:
+  name: "一梦江湖启动"
+  design_resolution: [1280, 720]
+  loop_count: 1
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16384
+
+ocr:
+  enabled: true
+
+steps:
+  - id: start_yimeng
+    type: start_app
+    timeout_ms: 10000
+    retry: 1
+    target:
+      package: "com.netease.wyclx"
+    action:
+      wait_seconds: 5.0
+
+  - id: start_btn_ZZDL
+    type: find_image_loop
+    timeout_ms: 60000
+    retry: -1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_ZZDL.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+
+  - id: start_btn_TRJH
+    type: find_image_loop
+    timeout_ms: 60000
+    retry: -1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_TRJH.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+
+  - id: start_btn_JRYX
+    type: find_image_loop
+    timeout_ms: 60000
+    retry: -1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_JRYX.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+
+  - id: confirm_login_modal
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_modal_ok.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 3.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+      missing_threshold: 3  # 连续 3 次找不到才停止
+
+  - id: close_login_switch
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_close.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 3.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+      missing_threshold: 3  # 连续 3 次找不到才停止
+
+  - id: close_welcome
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_close.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+      missing_threshold: 3  # 连续 3 次找不到才停止
+
+  - id: open_huodong
+    type: find_image_loop
+    timeout_ms: 60000
+    retry: 3
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_HD.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000

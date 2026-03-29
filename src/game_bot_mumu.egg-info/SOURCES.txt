@@ -17,9 +17,11 @@ src/game_bot_mumu.egg-info/dependency_links.txt
 src/game_bot_mumu.egg-info/requires.txt
 src/game_bot_mumu.egg-info/top_level.txt
 src/mobile_v2/main.py
+src/ymjh_bot/main.py
 tests/test_adb_integration.py
 tests/test_config_io.py
 tests/test_coords.py
 tests/test_runner_basic.py
+tests/test_screenshot.py
 tests/test_vision_template.py
 tests/test_vision_text.py

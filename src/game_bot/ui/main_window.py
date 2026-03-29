@@ -232,17 +232,20 @@ class MainWindow(QMainWindow):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         self.load_btn = QPushButton("Load YAML")
         self.save_btn = QPushButton("Save YAML")
+        self.screenshot_btn = QPushButton("Screenshot")
         self.run_btn = QPushButton("Run")
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         btn_layout.addWidget(self.load_btn)
         btn_layout.addWidget(self.save_btn)
+        btn_layout.addWidget(self.screenshot_btn)
         btn_layout.addWidget(self.run_btn)
         btn_layout.addWidget(self.stop_btn)
         grid.addWidget(btn_row, row, 0, 1, 4)
 
         self.load_btn.clicked.connect(self.load_yaml)
         self.save_btn.clicked.connect(self.save_yaml)
+        self.screenshot_btn.clicked.connect(self.take_screenshot)
         self.run_btn.clicked.connect(self.start_run)
         self.stop_btn.clicked.connect(self.stop_run)
 
@@ -362,6 +365,40 @@ class MainWindow(QMainWindow):
             self._append_log(f"Saved task: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Save Failed", str(exc))
+
+    def take_screenshot(self) -> None:
+        """Take a screenshot from the connected device and save it."""
+        adb_path = self.adb_path_edit.text().strip() or "adb"
+        serial = self.device_combo.currentText().strip() or None
+
+        try:
+            adb = ADBClient(adb_path=adb_path, serial=serial)
+            adb.ensure_device()
+            screenshot = adb.screenshot()
+
+            # Save screenshot to file
+            from pathlib import Path as PathLib
+            timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_dir = PathLib.cwd() / "screenshots"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            default_path = default_dir / f"screenshot_{timestamp}.png"
+
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Screenshot",
+                str(default_path),
+                "PNG (*.png)"
+            )
+            if not path:
+                return
+
+            import cv2
+            cv2.imwrite(path, screenshot)
+            self._append_log(f"Screenshot saved: {path}")
+            QMessageBox.information(self, "Screenshot", f"Screenshot saved to:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Screenshot Failed", str(exc))
+            self._append_log(f"[ERROR] Screenshot failed: {exc}")
 
     def start_run(self) -> None:
         try:

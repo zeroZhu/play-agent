@@ -6,11 +6,18 @@ from typing import Any
 
 SUPPORTED_STEP_TYPES = {
     "find_image_click",
+    "find_image_loop",
+    "find_image_loop_until_missing",
+    "find_image_loop_with_action",
     "find_text_click",
+    "find_text_loop",
     "drag",
     "wait",
     "loop",
     "conditional",
+    "switch_case",
+    "start_app",
+    "click_point",
 }
 
 
@@ -109,13 +116,15 @@ class StepSpec:
         step_type = str(data.get("type", "")).strip()
         if step_type not in SUPPORTED_STEP_TYPES:
             raise ValueError(f"Unsupported step type: {step_type}")
+        retry_raw = int(data.get("retry", 0))
+        retry = retry_raw if retry_raw < 0 else max(0, retry_raw)
         return cls(
             id=str(data.get("id", "")).strip(),
             type=step_type,
             target=dict(data.get("target", {}) or {}),
             threshold=float(data.get("threshold", 0.85)),
             timeout_ms=max(100, int(data.get("timeout_ms", 5000))),
-            retry=max(0, int(data.get("retry", 0))),
+            retry=retry,
             action=dict(data.get("action", {}) or {}),
             enabled=bool(data.get("enabled", True)),
         )

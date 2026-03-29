@@ -12,8 +12,7 @@ dependencies = [
   "PySide6>=6.7",
   "opencv-python>=4.10",
   "numpy>=1.26",
-  "PyYAML>=6.0",
-  "paddleocr>=2.8",
+  "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]

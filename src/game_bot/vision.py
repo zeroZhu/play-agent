@@ -167,7 +167,7 @@ class VisionEngine:
             raise RuntimeError(
                 "PaddleOCR is not available. Install dependencies with uv sync."
             ) from exc
-        self._ocr_reader = PaddleOCR(use_angle_cls=True, lang=self.ocr_lang, show_log=False)
+        self._ocr_reader = PaddleOCR(use_angle_cls=True, lang=self.ocr_lang)
         return self._ocr_reader
 
     @staticmethod

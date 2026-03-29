@@ -86,10 +86,12 @@ class ADBClient:
         )
         if proc.returncode != 0:
             raise ADBError(proc.stderr.decode(errors="ignore").strip() or "screencap failed")
-        raw = proc.stdout.replace(b"\r\n", b"\n")
+        raw = proc.stdout
+        if not raw or len(raw) < 100:
+            raise ADBError(f"Screenshot empty or too small: {len(raw)} bytes")
         image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            raise ADBError("Failed to decode screenshot bytes.")
+            raise ADBError(f"Failed to decode screenshot bytes. Size: {len(raw)}, header: {raw[:20]}")
         return image
 
     def tap(self, x: int, y: int) -> None:
@@ -105,6 +107,29 @@ class ADBClient:
         if proc.returncode != 0:
             raise ADBError(proc.stderr.strip() or f"adb shell failed: {command}")
         return (proc.stdout or "").strip()
+
+    def launch_app(self, package_name: str, activity: str | None = None) -> None:
+        """
+        启动 Android 应用。
+
+        Args:
+            package_name: 应用包名，如 com.example.app
+            activity: 可选的 Activity 名称，如 com.example.app.MainActivity
+                      如果不指定，将尝试启动默认 Activity
+        """
+        if activity:
+            component = f"{package_name}/{activity}"
+        else:
+            component = f"{package_name}/.{self._get_launch_activity(package_name)}"
+        self.shell(f"am start -n {component}")
+
+    def _get_launch_activity(self, package_name: str) -> str:
+        """获取应用的默认启动 Activity"""
+        out = self.shell(f"cmd package resolve-activity --components {package_name}")
+        for line in out.splitlines():
+            if line.startswith("com.") or line.startswith(package_name):
+                return line.split("/")[-1]
+        raise ADBError(f"Unable to find launch activity for package: {package_name}")
 
     def _device_prefix(self) -> list[str]:
         return ["-s", self.serial] if self.serial else []
