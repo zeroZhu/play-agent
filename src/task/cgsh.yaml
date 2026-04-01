@@ -1,0 +1,100 @@
+meta:
+  name: "茶馆说书"
+  design_resolution: [1280, 720]
+  loop_count: 1
+
+device:
+  adb_path: adb
+  serial: 127.0.0.1:16416
+
+ocr:
+  enabled: true
+
+steps:
+  - id: close_all
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 1
+    threshold: 0.8
+    target:
+      template: ["../ymjh_bot/templates/btn_close.png", "../ymjh_bot/templates/btn_pane_close.png"]  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+      missing_threshold: 3  # 连续 3 次找不到才停止
+  
+  - id: open_huodong
+    type: find_image_loop
+    timeout_ms: 60000
+    retry: 3
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_HD.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 5.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+  
+  - id: switch_huodong_jianghu
+    type: click_point
+    timeout_ms: 5000
+    retry: 3
+    target:
+      point: [192, 680]     # 设计分辨率下的坐标 [x, y]
+    action:
+      random_offset_px: 5   # 可选：随机偏移像素
+      random_delay_ms: [1000, 3000]  # 可选：点击后延迟
+  
+  - id: click_btn_qianwang
+    type: click_point
+    timeout_ms: 5000
+    retry: 3
+    target:
+      point: [270, 590]     # 设计分辨率下的坐标 [x, y]
+    action:
+      random_offset_px: 5   # 可选：随机偏移像素
+      random_delay_ms: [1000, 3000]  # 可选：点击后延迟
+
+  - id: auto_pathfinding # 自动寻路
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 1
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/text_自动寻路.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: false           # 找到后是否点击
+      interval_seconds: 3.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+      missing_threshold: 3  # 连续 3 次找不到才停止
+  
+  - id: click_btn_JRCG # 点击进入茶馆
+    type: find_image_loop_until_missing
+    timeout_ms: 60000
+    retry: 3
+    threshold: 0.8
+    target:
+      template: "../ymjh_bot/templates/btn_JRCG.png"  # 模板图片路径
+      min_confidence: 0.6
+    action:
+      click: true           # 找到后是否点击
+      interval_seconds: 3.0
+      random_offset_px: 3
+      random_delay_ms: 3000
+
+  - id: click_btn_anwser # 点击回答
+    type: condition
+    timeout_ms: 5000
+    retry: 3
+    target:
+      point: [48, 540]     # 设计分辨率下的坐标 [x, y]
+    action:
+      random_offset_px: 5   # 可选：随机偏移像素
+      random_delay_ms: [1000, 3000]  # 可选：点击后延迟

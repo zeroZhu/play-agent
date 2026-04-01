@@ -5,7 +5,7 @@ meta:
 
 device:
   adb_path: adb
-  serial: 127.0.0.1:16384
+  serial: 127.0.0.1:16416
 
 ocr:
   enabled: true
@@ -55,20 +55,6 @@ steps:
       random_offset_px: 3
       random_delay_ms: 3000
   
-  - id: open_huodong
-    type: find_image_loop
-    timeout_ms: 60000
-    retry: 3
-    threshold: 0.8
-    target:
-      template: "../ymjh_bot/templates/btn_HD.png"  # 模板图片路径
-      min_confidence: 0.6
-    action:
-      click: true           # 找到后是否点击
-      interval_seconds: 5.0
-      random_offset_px: 3
-      random_delay_ms: 3000
-
   - id: open_huodong
     type: find_image_loop
     timeout_ms: 60000

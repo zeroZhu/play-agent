@@ -1,11 +1,11 @@
 meta:
-  name: "一梦江湖启动"
+  name: "课业任务"
   design_resolution: [1280, 720]
   loop_count: 1
 
 device:
   adb_path: adb
-  serial: 127.0.0.1:16384
+  serial: 127.0.0.1:16416
 
 ocr:
   enabled: true

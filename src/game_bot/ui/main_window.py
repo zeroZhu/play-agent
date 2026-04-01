@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,12 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..adb_client import ADBClient, ADBError
-from ..config_io import load_task, save_task
-from ..logger import RunLogger
-from ..models import SUPPORTED_STEP_TYPES, StepSpec, TaskSpec
-from ..runner import TaskRunner
-from ..vision import VisionEngine
+from task_engine import ADBClient, ADBError, load_task, save_task, RunLogger, StepSpec, TaskSpec, TaskRunner, VisionEngine
+from task_engine.models import SUPPORTED_STEP_TYPES
 
 
 class StepDialog(QDialog):
@@ -140,6 +138,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Game Bot (MuMu First)")
         self.resize(1200, 820)
 
+        # Load .env file for default configuration
+        self._load_env_config()
+
         self.task = TaskSpec()
         self.current_file: Path | None = None
         self.worker: RunnerWorker | None = None
@@ -176,10 +177,19 @@ class MainWindow(QMainWindow):
         self.delay_min.setValue(self.task.meta.random_delay_ms[0])
         self.delay_max.setValue(self.task.meta.random_delay_ms[1])
 
-        self.adb_path_edit = QLineEdit(self.task.device.adb_path)
+        self.adb_path_edit = QLineEdit(self._env_adb_path or self.task.device.adb_path)
         self.device_combo = QComboBox()
         self.refresh_btn = QPushButton("Refresh Devices")
         self.refresh_btn.clicked.connect(self.refresh_devices)
+
+        # Custom serial input and connect button
+        self.serial_input = QLineEdit()
+        self.serial_input.setPlaceholderText("e.g., 127.0.0.1:5555")
+        # Set default serial from .env if available
+        if self._env_serial:
+            self.serial_input.setText(self._env_serial)
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.clicked.connect(self.connect_serial)
 
         self.ocr_enabled = QCheckBox("Enable OCR")
         self.ocr_enabled.setChecked(self.task.ocr.enabled)
@@ -219,6 +229,16 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(self.device_combo, 1)
         device_layout.addWidget(self.refresh_btn)
         grid.addWidget(device_row, row, 3)
+        row += 1
+
+        # Custom serial input row
+        grid.addWidget(QLabel("Custom Serial"), row, 0)
+        serial_input_row = QWidget()
+        serial_input_layout = QHBoxLayout(serial_input_row)
+        serial_input_layout.setContentsMargins(0, 0, 0, 0)
+        serial_input_layout.addWidget(self.serial_input, 1)
+        serial_input_layout.addWidget(self.connect_btn)
+        grid.addWidget(serial_input_row, row, 1, 1, 3)
         row += 1
 
         grid.addWidget(self.ocr_enabled, row, 0)
@@ -303,6 +323,27 @@ class MainWindow(QMainWindow):
             return
         for item in devices:
             self.device_combo.addItem(item.serial)
+
+    def connect_serial(self) -> None:
+        """Connect to a custom ADB serial port."""
+        serial = self.serial_input.text().strip()
+        if not serial:
+            QMessageBox.warning(self, "Invalid Serial", "Please enter a serial port.")
+            return
+        adb_path = self.adb_path_edit.text().strip() or "adb"
+        try:
+            adb = ADBClient(adb_path=adb_path)
+            adb.connect(serial)
+            self._append_log(f"Connected to {serial}")
+            # Refresh device list and select the connected device
+            self.refresh_devices()
+            idx = self.device_combo.findText(serial)
+            if idx >= 0:
+                self.device_combo.setCurrentIndex(idx)
+            QMessageBox.information(self, "Connect", f"Successfully connected to {serial}")
+        except ADBError as exc:
+            QMessageBox.critical(self, "Connect Failed", str(exc))
+            self._append_log(f"[ERROR] Connect failed: {exc}")
 
     def add_step(self) -> None:
         dlg = StepDialog(self)
@@ -484,6 +525,24 @@ class MainWindow(QMainWindow):
         self.ocr_lang.setCurrentText(self.task.ocr.lang)
         self.ocr_min_conf.setValue(self.task.ocr.min_confidence)
         self._refresh_step_table()
+
+    def _load_env_config(self) -> None:
+        """Load default ADB configuration from .env file."""
+        # Load .env file from project root
+        env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
+        else:
+            # Try current working directory
+            load_dotenv()
+
+        # Read environment variables
+        default_adb_path = os.getenv("DEFAULT_ADB_PATH")
+        default_serial = os.getenv("DEFAULT_ADB_SERIAL")
+
+        # Store for later use in _build_top_panel
+        self._env_adb_path = default_adb_path
+        self._env_serial = default_serial
 
     def _refresh_step_table(self) -> None:
         self.step_table.setRowCount(len(self.task.steps))
