@@ -18,10 +18,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from task_engine import ADBClient, RunLogger, VisionEngine, TaskSpec, load_task, load_dsl_task
+from yamlBot import YamlRunner, load_task, load_dsl_task, load_task_auto
+from botCore import ADBClient, RunLogger, VisionEngine, TaskSpec
 from dslBot.base import GameTask
 from dslBot.runner import DSLTaskRunner
-from task_engine.runner import TaskRunner
 
 
 def main() -> int:
@@ -105,7 +105,7 @@ def main() -> int:
         vision = VisionEngine(enable_ocr=task.ocr.enabled, ocr_lang=task.ocr.lang)
         logger = RunLogger()
 
-        runner = TaskRunner(
+        runner = YamlRunner(
             task,
             adb,
             vision,

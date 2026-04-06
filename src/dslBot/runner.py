@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from task_engine import ADBClient, VisionEngine, RunLogger, ExecutionResult
+from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult
 from .base import GameTask
 
 

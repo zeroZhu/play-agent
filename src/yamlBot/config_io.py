@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import TaskSpec
+from botCore.models import TaskSpec
 
 
 def _resolve_template_paths(raw: dict, base_dir: Path) -> None:

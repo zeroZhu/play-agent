@@ -31,8 +31,8 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import numpy as np
 
-from task_engine import ADBClient, VisionEngine, RunLogger, ExecutionResult, TaskMeta, TaskSpec
-from task_engine.coords import apply_random_offset, scale_point, sleep_with_jitter
+from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, TaskMeta, TaskSpec
+from botCore.coords import apply_random_offset, scale_point, sleep_with_jitter
 
 
 @runtime_checkable

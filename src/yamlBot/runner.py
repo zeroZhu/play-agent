@@ -5,14 +5,11 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .adb_client import ADBClient
-from .coords import apply_random_offset, scale_point, sleep_with_jitter
-from .logger import RunLogger
-from .models import ExecutionResult, StepSpec, TaskSpec
-from .vision import VisionEngine
+from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, StepSpec, TaskSpec
+from botCore.coords import apply_random_offset, scale_point, sleep_with_jitter
 
 
-class TaskRunner:
+class YamlRunner:
     def __init__(
         self,
         task: TaskSpec,

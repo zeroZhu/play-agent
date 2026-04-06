@@ -1,5 +1,5 @@
 """Game bot package."""
 
-from task_engine import ExecutionResult, StepSpec, TaskSpec
+from botCore import ExecutionResult, StepSpec, TaskSpec
 
 __all__ = ["TaskSpec", "StepSpec", "ExecutionResult"]

@@ -1,4 +1,7 @@
+botCore
+dslBot
 game_bot
 mobile_v2
 task
+yamlBot
 ymjh_bot

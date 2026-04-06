@@ -7,3 +7,5 @@ __pycache__/
 logs/
 uv.lock.bak
 pytest-cache-files-*
+*.egg-info/
+.claude/
