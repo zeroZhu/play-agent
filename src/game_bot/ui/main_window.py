@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import cv2
+import datetime
 
 from yamlBot import YamlRunner, load_task
 from botCore import ADBClient, ADBError, RunLogger, TaskSpec, VisionEngine
@@ -36,9 +38,11 @@ class RunnerWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, task: TaskSpec | GameTask):
+    def __init__(self, task: TaskSpec | GameTask, adb_path: str, serial: str | None):
         super().__init__()
         self.task = task
+        self.adb_path = adb_path
+        self.serial = serial
         self.runner: TaskRunner | DSLTaskRunner | None = None
 
     @Slot()
@@ -46,7 +50,7 @@ class RunnerWorker(QObject):
         try:
             if isinstance(self.task, GameTask):
                 # DSL task
-                adb = ADBClient(adb_path=self.task.adb_path, serial=self.task.device_serial)
+                adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
                 vision = VisionEngine(enable_ocr=self.task.ocr_enabled, ocr_lang=self.task.ocr_lang)
                 logger = RunLogger()
                 self.runner = DSLTaskRunner(
@@ -181,6 +185,14 @@ class MainWindow(QMainWindow):
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         layout.addWidget(self.log_view, 1)
+
+        # Clear log button
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn.clicked.connect(self.clear_log)
+        btn_layout.addWidget(self.clear_log_btn)
+        layout.addLayout(btn_layout)
         return box
 
     def refresh_devices(self) -> None:
@@ -258,9 +270,8 @@ class MainWindow(QMainWindow):
             adb.ensure_device()
             screenshot = adb.screenshot()
 
-            from pathlib import Path as PathLib
-            timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_dir = PathLib.cwd() / "screenshots"
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_dir = Path.cwd() / "screenshots"
             default_dir.mkdir(parents=True, exist_ok=True)
             default_path = default_dir / f"screenshot_{timestamp}.png"
 
@@ -273,7 +284,6 @@ class MainWindow(QMainWindow):
             if not path:
                 return
 
-            import cv2
             cv2.imwrite(path, screenshot)
             self._append_log(f"Screenshot saved: {path}")
             QMessageBox.information(self, "Screenshot", f"Screenshot saved to:\n{path}")
@@ -293,8 +303,12 @@ class MainWindow(QMainWindow):
         # Apply GUI settings to task
         self._apply_gui_settings_to_task()
 
+        # Get ADB configuration from GUI
+        adb_path = self.adb_path_edit.text().strip() or "adb"
+        serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
+
         self.thread = QThread(self)
-        self.worker = RunnerWorker(self.task)
+        self.worker = RunnerWorker(self.task, adb_path, serial)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._append_log)
@@ -302,6 +316,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_run_finished)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
+        self.thread.finished.connect(self._cleanup_worker)
         self.thread.start()
 
         self.run_btn.setEnabled(False)
@@ -309,15 +324,22 @@ class MainWindow(QMainWindow):
         self._append_log("Run started.")
 
     def stop_run(self) -> None:
+        """Stop the currently running task."""
         if self.worker and self.worker.runner:
             self.worker.runner.stop()
             self._append_log("Stop requested.")
+        else:
+            self._append_log("[WARN] No active runner to stop")
         self.stop_btn.setEnabled(False)
 
     def _on_run_finished(self) -> None:
         self._append_log("Run finished.")
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+
+    def _cleanup_worker(self) -> None:
+        """Clean up worker reference after thread finishes."""
+        self.worker = None
 
     def _on_run_error(self, message: str) -> None:
         self._append_log(f"[ERROR] {message}")
@@ -343,9 +365,6 @@ class MainWindow(QMainWindow):
 
         if isinstance(self.task, GameTask):
             # DSL task
-            self.task.adb_path = self.adb_path_edit.text().strip() or "adb"
-            serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
-            self.task.device_serial = serial
             self.task.ocr_enabled = self.ocr_enabled.isChecked()
             self.task.ocr_lang = ocr_lang
         else:
@@ -360,6 +379,10 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, text: str) -> None:
         self.log_view.append(text)
+
+    def clear_log(self) -> None:
+        """Clear all log messages."""
+        self.log_view.clear()
 
 
 def load_python_task(path: str | Path) -> GameTask:

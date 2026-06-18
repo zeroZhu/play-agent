@@ -18,7 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from yamlBot import YamlRunner, load_task, load_dsl_task, load_task_auto
+from yamlBot import YamlRunner, load_task
 from botCore import ADBClient, RunLogger, VisionEngine, TaskSpec
 from dslBot.base import GameTask
 from dslBot.runner import DSLTaskRunner
@@ -52,16 +52,12 @@ def main() -> int:
         print(f"Executing Python DSL task: {task.__name__}")
 
         # Override config from CLI args
-        if args.adb:
-            task.adb_path = args.adb
-        if args.serial:
-            task.device_serial = args.serial
         if args.no_ocr:
             task.ocr_enabled = False
 
         # Create instance and run
         task_instance = task()
-        adb = ADBClient(adb_path=task.adb_path, serial=task.device_serial)
+        adb = ADBClient(adb_path=args.adb, serial=args.serial)
         vision = VisionEngine(enable_ocr=task.ocr_enabled, ocr_lang=task.ocr_lang)
         logger = RunLogger()
 
@@ -132,6 +128,26 @@ def main() -> int:
     else:
         print(f"Error: Unknown task type: {type(task)}")
         return 1
+
+
+def load_dsl_task(path: Path) -> type:
+    """Load a Python DSL task class."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("dsl_task_module", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load module from {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Find the first GameTask subclass
+    for name in dir(module):
+        attr = getattr(module, name)
+        if isinstance(attr, type) and issubclass(attr, GameTask) and attr is not GameTask:
+            return attr
+
+    raise ValueError(f"No GameTask subclass found in {path}")
 
 
 def load_task_auto(path: Path) -> TaskSpec | type:

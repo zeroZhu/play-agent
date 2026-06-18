@@ -8,7 +8,10 @@
       "Bash(cd:*)",
       "Bash(rm -f game_bot/adb_client.py game_bot/config_io.py game_bot/coords.py game_bot/logger.py game_bot/models.py game_bot/runner.py game_bot/vision.py)",
       "Bash(rm -rf game_bot/dsl)",
-      "Bash(.venv/Scripts/python.exe -c \"\nfrom task_engine import TaskSpec, ADBClient, VisionEngine, TaskRunner\nfrom dslBot import GameTask, step\nfrom src.game_bot.ui.main_window import MainWindow\nprint\\('All imports OK'\\)\n\")"
+      "Bash(.venv/Scripts/python.exe -c \"\nfrom task_engine import TaskSpec, ADBClient, VisionEngine, TaskRunner\nfrom dslBot import GameTask, step\nfrom src.game_bot.ui.main_window import MainWindow\nprint\\('All imports OK'\\)\n\")",
+      "Bash(uv pip:*)",
+      "Bash(uv run:*)",
+      "Bash(uv sync:*)"
     ]
   }
 }

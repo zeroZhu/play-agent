@@ -6,7 +6,6 @@ Usage:
 
     class MyTask(GameTask):
         design_resolution = (1280, 720)
-        device_serial = "127.0.0.1:16384"
 
         @step(retry=3)
         def close_popup(self):
@@ -17,22 +16,40 @@ Usage:
 
         @step()
         def do_daily(self):
-            self.click_image("btn_start.png")
-            self.wait(2)
-            if self.find_ocr_text("确认"):
+            self.wait(2000)
+            if self.find_image("btn_start.png", timeout_ms=5000):
                 self.click()
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 import numpy as np
 
 from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, TaskMeta, TaskSpec
-from botCore.coords import apply_random_offset, scale_point, sleep_with_jitter
+from botCore.coords import apply_random_offset, scale_point
+
+
+class StepJumpException(Exception):
+    """Exception raised to jump to a specific step.
+
+    Usage:
+        raise StepJumpException("step_name")  # Jump to named step
+        raise StepJumpException(StepJumpException.JUMP_TO_START)  # Jump to first step
+        raise StepJumpException(StepJumpException.JUMP_TO_END)  # End current loop
+        raise StepJumpException(StepJumpException.JUMP_TO_PREV)  # Jump to previous step
+        raise StepJumpException(StepJumpException.JUMP_TO_NEXT)  # Continue to next step
+    """
+    JUMP_TO_START = "__start__"
+    JUMP_TO_END = "__end__"
+    JUMP_TO_PREV = "__prev__"
+    JUMP_TO_NEXT = "__next__"
+
+    def __init__(self, target: str):
+        self.target = target
+        super().__init__(f"Jump to: {target}")
 
 
 @runtime_checkable
@@ -41,25 +58,33 @@ class StepCallable(Protocol):
 
 
 def step(
-    retry: int = 0,
-    timeout_ms: int = 10000,
+    retry: int | None = 3,
+    timeout_ms: int | None = 30000,
     enabled: bool = True,
+    interval_ms: int | None = None,
 ):
     """Decorator to mark a method as a task step.
 
     Args:
-        retry: Number of retries on failure
-        timeout_ms: Timeout in milliseconds
+        retry: Number of retries on failure (None for infinite)
+        timeout_ms: Timeout in milliseconds (default: 30000, None for no timeout)
         enabled: Whether this step is enabled
+        interval_ms: Wait time in milliseconds after step completes (None for no wait)
     """
     def decorator(func: Callable[[GameTask], Any]) -> StepCallable:
         func._step_meta = {
             "retry": retry,
             "timeout_ms": timeout_ms,
             "enabled": enabled,
+            "interval_ms": interval_ms,
         }
         return func
     return decorator
+
+
+class StepStopException(Exception):
+    """Raised when stop is requested during a blocking operation."""
+    pass
 
 
 class GameTask:
@@ -67,49 +92,99 @@ class GameTask:
 
     Class attributes:
         design_resolution: Tuple of (width, height) for design resolution
-        device_serial: ADB device serial (can be None for auto-detect)
-        adb_path: Path to adb executable (default: "adb")
-        ocr_enabled: Whether to enable OCR (default: True)
-        ocr_lang: OCR language (default: "ch")
         loop_count: Number of loops (default: 1)
+        ocr_enabled: Whether to enable OCR (default: False)
+        ocr_lang: OCR language (default: "ch")
 
     Example:
         class YmjhTask(GameTask):
             design_resolution = (1280, 720)
-            device_serial = "127.0.0.1:16384"
 
             @step(retry=3)
             def close_all(self):
                 while self.find_image("btn_close.png"):
                     self.click()
-                    self.wait(0.5)
+                    self.wait(500)
     """
 
     # Class-level configuration
     design_resolution: tuple[int, int] = (1280, 720)
-    device_serial: str | None = None
-    adb_path: str = "adb"
-    ocr_enabled: bool = True
-    ocr_lang: str = "ch"
     loop_count: int = 1
+    ocr_enabled: bool = False
+    ocr_lang: str = "ch"
 
     # Instance attributes (set at runtime)
     _adb: ADBClient
     _vision: VisionEngine
     _logger: RunLogger | None
+    _event_callback: Callable[[str], None] | None
     _stop_requested: bool
     _screen_resolution: tuple[int, int] | None
+    _jump_target: str | None
+    _current_step_index: int
 
-    def __init__(self):
+    def __init__(self, default_interval_ms: int | None = None):
         self._stop_requested = False
         self._screen_resolution = None
         self._last_match_center: tuple[int, int] | None = None
         self._last_match_score: float = 0.0
+        self._default_interval_ms = default_interval_ms
+        self._event_callback: Callable[[str], None] | None = None
+        self._jump_target: str | None = None
+        self._current_step_index: int = 0
+
+    def setup(
+        self,
+        adb: ADBClient,
+        vision: VisionEngine,
+        logger: RunLogger | None = None,
+        event_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Initialize the task with ADB and vision engines."""
+        self._adb = adb
+        self._vision = vision
+        self._logger = logger
+        self._event_callback = event_callback
 
     @classmethod
     def get_steps(cls) -> list[tuple[str, Callable[[GameTask], Any], dict]]:
-        """Get all step methods with their metadata."""
+        """Get all step methods with their metadata in definition order."""
+        import inspect
         steps = []
+
+        # Try to get source code to determine method order
+        try:
+            source = inspect.getsource(cls)
+            lines = source.split('\n')
+            # Find all @step decorated methods and their line numbers
+            step_methods = {}
+            for lineno, line in enumerate(lines):
+                if '@step' in line:
+                    # Next line should be the method definition
+                    if lineno + 1 < len(lines) and 'def ' in lines[lineno + 1]:
+                        method_name = lines[lineno + 1].split('def ')[1].split('(')[0]
+                        step_methods[method_name] = lineno
+            # Sort methods by line number
+            sorted_methods = sorted(step_methods.keys(), key=lambda x: step_methods[x])
+            # Build steps list in order
+            for name in sorted_methods:
+                attr = getattr(cls, name)
+                if callable(attr) and hasattr(attr, "_step_meta"):
+                    steps.append((name, attr, attr._step_meta))
+            return steps
+        except Exception:
+            pass
+
+        # Fallback: use __dict__ to preserve definition order (Python 3.7+)
+        step_methods = []
+        for name, attr in cls.__dict__.items():
+            if callable(attr) and hasattr(attr, "_step_meta"):
+                step_methods.append((name, attr, attr._step_meta))
+
+        if step_methods:
+            return step_methods
+
+        # Last resort: use dir() (order not guaranteed)
         for name in dir(cls):
             attr = getattr(cls, name)
             if callable(attr) and hasattr(attr, "_step_meta"):
@@ -119,29 +194,13 @@ class GameTask:
     @classmethod
     def to_task_spec(cls) -> TaskSpec:
         """Convert DSL task to TaskSpec for execution."""
-        spec = TaskSpec(
+        return TaskSpec(
             meta=TaskMeta(
                 name=cls.__name__,
                 design_resolution=cls.design_resolution,
                 loop_count=cls.loop_count,
             ),
         )
-        spec.device.adb_path = cls.adb_path
-        spec.device.serial = cls.device_serial
-        spec.ocr.enabled = cls.ocr_enabled
-        spec.ocr.lang = cls.ocr_lang
-        return spec
-
-    def setup(
-        self,
-        adb: ADBClient,
-        vision: VisionEngine,
-        logger: RunLogger | None = None,
-    ) -> None:
-        """Initialize the task with ADB and vision engines."""
-        self._adb = adb
-        self._vision = vision
-        self._logger = logger
 
     def stop(self) -> None:
         """Request task stop."""
@@ -151,15 +210,41 @@ class GameTask:
         """Check if stop was requested."""
         return self._stop_requested
 
+    def jump_to(self, step_name: str) -> None:
+        """Jump to a specific step by name.
+
+        Args:
+            step_name: Name of the target step
+        """
+        raise StepJumpException(step_name)
+
+    def jump_to_start(self) -> None:
+        """Jump to the first step."""
+        raise StepJumpException(StepJumpException.JUMP_TO_START)
+
+    def jump_to_end(self) -> None:
+        """Jump to end (finish current loop)."""
+        raise StepJumpException(StepJumpException.JUMP_TO_END)
+
+    def jump_to_prev(self) -> None:
+        """Jump to previous step."""
+        raise StepJumpException(StepJumpException.JUMP_TO_PREV)
+
+    def jump_to_next(self) -> None:
+        """Jump to next step (skip remaining logic in current step)."""
+        raise StepJumpException(StepJumpException.JUMP_TO_NEXT)
+
+    def get_current_step_name(self) -> str | None:
+        """Get the current step name."""
+        steps = self.get_steps()
+        if 0 <= self._current_step_index < len(steps):
+            return steps[self._current_step_index][0]
+        return None
+
     # === ADB Operations ===
 
     def tap(self, x: int | None = None, y: int | None = None) -> None:
-        """Click at specified coordinates or last matched position.
-
-        Args:
-            x: X coordinate (uses last match center if None)
-            y: Y coordinate (uses last match center if None)
-        """
+        """Click at specified coordinates or last matched position."""
         if x is None or y is None:
             if self._last_match_center:
                 x, y = self._last_match_center
@@ -211,263 +296,149 @@ class GameTask:
         self._log(f"Image not found: {template} (score={match.score:.3f})")
         return False
 
-    def find_image_pos(
+    def wait_image_appear(
         self,
         template: str | list[str],
+        timeout_ms: int | None = 10000,
         threshold: float = 0.8,
-        roi: tuple[int, int, int, int] | None = None,
-    ) -> tuple[int, int] | None:
-        """Find template image and return position.
-
-        Returns:
-            (x, y) center position or None if not found
-        """
-        if self.find_image(template, threshold, roi):
-            return self._last_match_center
-        return None
-
-    def find_ocr_text(
-        self,
-        query: str,
-        exact: bool = False,
-        min_confidence: float = 0.55,
-    ) -> bool:
-        """Find text using OCR.
-
-        Args:
-            query: Text to search for
-            exact: Exact match required
-            min_confidence: Minimum confidence threshold
-
-        Returns:
-            True if found, stores center in _last_match_center
-        """
-        screenshot = self.screenshot()
-        match = self._vision.find_text(screenshot, query, exact=exact, min_confidence=min_confidence)
-        if match.found and match.center:
-            self._last_match_center = match.center
-            self._last_match_score = match.confidence
-            self._log(f"Found OCR text: '{match.text}' (conf={match.confidence:.2f})")
-            return True
-        self._last_match_center = None
-        self._log(f"OCR text not found: '{query}'")
-        return False
-
-    def get_ocr_text(self) -> list[dict[str, Any]]:
-        """Get all OCR text from screen.
-
-        Returns:
-            List of {text, confidence, bbox, center} dicts
-        """
-        screenshot = self.screenshot()
-        results = self._vision.ocr(screenshot)
-        return [
-            {
-                "text": r.text,
-                "confidence": r.confidence,
-                "bbox": r.bbox,
-                "center": ((r.bbox[0] + r.bbox[2]) // 2, (r.bbox[1] + r.bbox[3]) // 2),
-            }
-            for r in results
-        ]
-
-    # === Combined Operations ===
-
-    def click_image(
-        self,
-        template: str | list[str],
-        threshold: float = 0.8,
-        roi: tuple[int, int, int, int] | None = None,
-        random_offset: int = 3,
-        retry: int = 0,
-        timeout_ms: int = 5000,
-    ) -> bool:
-        """Find and click template image.
-
-        Args:
-            template: Template image path(s)
-            threshold: Match threshold
-            roi: Region of interest
-            random_offset: Random offset pixels
-            retry: Number of retries
-            timeout_ms: Timeout in milliseconds
-
-        Returns:
-            True if found and clicked
-        """
-        start = time.perf_counter()
-        attempts = max(1, retry + 1)
-        deadline = start + timeout_ms / 1000.0
-
-        while time.perf_counter() < deadline and attempts > 0:
-            if self._stop_requested:
-                return False
-            if self.find_image(template, threshold, roi):
-                self.click_with_offset(random_offset)
-                return True
-            attempts -= 1
-            time.sleep(0.2)
-        return False
-
-    def click_with_offset(self, offset: int = 3) -> None:
-        """Click at last matched position with random offset."""
-        if self._last_match_center:
-            point = apply_random_offset(self._last_match_center, offset)
-            self.tap(point[0], point[1])
-
-    def click_point(
-        self,
-        x: int,
-        y: int,
-        random_offset: int = 3,
-        design_resolution: tuple[int, int] | None = None,
-    ) -> None:
-        """Click at specified design-resolution coordinates.
-
-        Args:
-            x: X coordinate in design resolution
-            y: Y coordinate in design resolution
-            random_offset: Random offset pixels
-            design_resolution: Override design resolution (uses class default if None)
-        """
-        if design_resolution is None:
-            design_resolution = self.design_resolution
-
-        scaled = scale_point((x, y), design_resolution, self._screen_resolution or design_resolution)
-        if random_offset > 0:
-            scaled = apply_random_offset(scaled, random_offset)
-        self.tap(scaled[0], scaled[1])
-
-    def wait(self, seconds: float, jitter: tuple[int, int] | None = None) -> None:
-        """Wait for specified seconds.
-
-        Args:
-            seconds: Base wait time
-            jitter: Optional (min_ms, max_ms) for random delay
-        """
-        if jitter:
-            sleep_with_jitter(seconds, jitter)
-        else:
-            time.sleep(seconds)
-
-    def wait_for_image(
-        self,
-        template: str | list[str],
-        timeout_ms: int = 10000,
-        threshold: float = 0.8,
+        callback: Callable[[bool], None] | None = None,
+        interval_ms: int = 500,
     ) -> bool:
         """Wait for image to appear.
+
+        Args:
+            template: Template image path or list of paths
+            timeout_ms: Max wait time in milliseconds (None for infinite)
+            threshold: Match threshold (0.0-1.0)
+            callback: Optional callback function called with found status after each attempt
+            interval_ms: Interval between find attempts in milliseconds (default: 500)
 
         Returns:
             True if image appears within timeout
         """
+        templates = [template] if isinstance(template, str) else template
         start = time.perf_counter()
-        deadline = start + timeout_ms / 1000.0
+        deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
 
-        while time.perf_counter() < deadline:
+        while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
-                return False
-            if self.find_image(template, threshold):
+                raise StepStopException("Stop requested")
+            screenshot = self.screenshot()
+            match = self._vision.match_template(screenshot, templates, threshold=threshold)
+            self._last_match_score = match.score
+            if match.found and match.center:
+                self._last_match_center = match.center
+                self._log(f"Found image: {template} (score={match.score:.3f})")
+                if callback:
+                    callback(True)
                 return True
-            time.sleep(0.3)
+            if callback:
+                callback(False)
+            # Sleep in smaller intervals to respond to stop requests faster
+            sleep_interval = min(interval_ms / 1000.0, 0.1)
+            time.sleep(sleep_interval)
+
+        self._last_match_center = None
+        self._log(f"Image not found: {template} (timeout)")
+        if callback:
+            callback(False)
         return False
 
-    def wait_for_missing(
+    def wait_image_missing(
         self,
         template: str | list[str],
-        timeout_ms: int = 10000,
+        timeout_ms: int | None = 10000,
         threshold: float = 0.8,
         missing_threshold: int = 3,
+        callback: Callable[[bool, int], None] | None = None,
+        interval_ms: int = 500,
     ) -> bool:
         """Wait for image to disappear (consecutive missing).
 
         Args:
             template: Template to watch for disappearance
-            timeout_ms: Max wait time
-            threshold: Match threshold
+            timeout_ms: Max wait time in milliseconds (None for infinite)
+            threshold: Match threshold (0.0-1.0)
             missing_threshold: Consecutive missing count to consider as disappeared
+            callback: Optional callback function called with (found, missing_count) after each attempt
+            interval_ms: Interval between find attempts in milliseconds (default: 500)
 
         Returns:
             True if image disappears within timeout
         """
         start = time.perf_counter()
-        deadline = start + timeout_ms / 1000.0
+        deadline = None if timeout_ms is None else start + timeout_ms / 1000.0
         consecutive_missing = 0
 
-        while time.perf_counter() < deadline:
+        while deadline is None or time.perf_counter() < deadline:
             if self._stop_requested:
-                return False
-            if not self.find_image(template, threshold):
+                raise StepStopException("Stop requested")
+            found = self.find_image(template, threshold)
+            if not found:
                 consecutive_missing += 1
+                if callback:
+                    callback(False, consecutive_missing)
                 if consecutive_missing >= missing_threshold:
                     return True
             else:
                 consecutive_missing = 0
-            time.sleep(0.5)
+                if callback:
+                    callback(True, consecutive_missing)
+            # Sleep in smaller intervals to respond to stop requests faster
+            sleep_interval = min(interval_ms / 1000.0, 0.1)
+            time.sleep(sleep_interval)
+        if callback:
+            callback(False, consecutive_missing)
         return consecutive_missing >= missing_threshold
 
-    # === Loop Operations ===
+    # === Combined Operations ===
 
-    def loop_click_image(
-        self,
-        template: str | list[str],
-        max_count: int = 10,
-        interval_seconds: float = 3.0,
-        threshold: float = 0.8,
-        missing_threshold: int = 3,
-    ) -> int:
-        """Loop find and click image until it disappears.
+    def click(self, offset: int = 3) -> None:
+        """Click at last matched position with random offset.
 
         Args:
-            template: Template image path(s)
-            max_count: Maximum iterations
-            interval_seconds: Interval between attempts
-            threshold: Match threshold
-            missing_threshold: Consecutive missing to stop
-
-        Returns:
-            Number of successful clicks
+            offset: Random offset in pixels (default: 3)
         """
-        click_count = 0
-        consecutive_missing = 0
+        if self._last_match_center:
+            x, y = apply_random_offset(self._last_match_center, offset)
+            self.tap(x, y)
 
-        for _ in range(max_count):
-            if self._stop_requested:
-                break
-            if self.find_image(template, threshold):
-                consecutive_missing = 0
-                self.click_with_offset(3)
-                click_count += 1
-                self.wait(interval_seconds)
-            else:
-                consecutive_missing += 1
-                if consecutive_missing >= missing_threshold:
-                    break
-                self.wait(interval_seconds)
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        """Click at specified design-resolution coordinates.
 
-        self._log(f"Loop click completed: {click_count} clicks")
-        return click_count
+        Args:
+            x: X coordinate in design resolution
+            y: Y coordinate in design resolution
+            offset: Random offset in pixels (default: 3)
+        """
+        scaled = scale_point((x, y), self.design_resolution, self._screen_resolution or self.design_resolution)
+        if offset > 0:
+            x, y = apply_random_offset(scaled, offset)
+        else:
+            x, y = scaled
+        self.tap(x, y)
 
     # === Utility ===
 
+    def wait(self, ms: int | float) -> None:
+        """Wait for specified milliseconds."""
+        # Sleep in small intervals to check for stop requests
+        remaining_ms = int(ms)
+        while remaining_ms > 0:
+            if self._stop_requested:
+                raise StepStopException("Stop requested")
+            sleep_time = min(remaining_ms, 50)  # Check every 50ms
+            time.sleep(sleep_time / 1000.0)
+            remaining_ms -= sleep_time
+
     def _log(self, message: str) -> None:
         """Internal log method."""
+        # Send to GUI via event callback first
+        if self._event_callback:
+            self._event_callback(f"[{self.__class__.__name__}] {message}")
+        # Also log to logger if available
         if self._logger:
-            self._logger.log(message)
-        else:
+            self._logger.log_event({"message": message})
+        # Fallback to console
+        if not self._event_callback and not self._logger:
             print(f"[{self.__class__.__name__}] {message}")
-
-    def _get_scaled_point(
-        self,
-        x: int,
-        y: int,
-        design_resolution: tuple[int, int] | None = None,
-    ) -> tuple[int, int]:
-        """Scale point from design resolution to screen resolution."""
-        if design_resolution is None:
-            design_resolution = self.design_resolution
-        return scale_point(
-            (x, y),
-            design_resolution,
-            self._screen_resolution or design_resolution,
-        )
