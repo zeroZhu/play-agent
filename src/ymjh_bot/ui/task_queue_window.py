@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,11 +25,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-import cv2
-import datetime
 
-from botCore import ADBClient, ADBError, RunLogger, VisionEngine
-from dslBot.base import GameTask
+from botCore import ADBClient, ADBError, GameTask, RunLogger, VisionEngine, load_task_class
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
 
 
@@ -46,18 +41,22 @@ class QueueRunnerWorker(QObject):
         task_instances: list[GameTask],
         adb_path: str,
         serial: str | None,
+        ocr_enabled: bool,
+        ocr_lang: str,
     ):
         super().__init__()
         self.task_instances = task_instances
         self.adb_path = adb_path
         self.serial = serial
+        self.ocr_enabled = ocr_enabled
+        self.ocr_lang = ocr_lang
         self.runner: TaskQueueRunner | None = None
 
     @Slot()
     def run(self) -> None:
         try:
             adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
-            vision = VisionEngine(enable_ocr=False, ocr_lang="ch")
+            vision = VisionEngine(enable_ocr=self.ocr_enabled, ocr_lang=self.ocr_lang)
             logger = RunLogger()
             self.runner = TaskQueueRunner(
                 task_list=self.task_instances,
@@ -257,18 +256,7 @@ class TaskQueueWindow(QMainWindow):
 
     def _load_task_class_from_file(self, file_path: Path) -> type[GameTask] | None:
         """Load GameTask subclass from a Python file."""
-        spec = importlib.util.spec_from_file_location("task_module", file_path)
-        if spec is None or spec.loader is None:
-            return None
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        for name in dir(module):
-            attr = getattr(module, name)
-            if isinstance(attr, type) and issubclass(attr, GameTask) and attr is not GameTask:
-                return attr
-        return None
+        return load_task_class(file_path)
 
     def _update_available_list(self) -> None:
         """Update the available tasks list widget."""
@@ -276,6 +264,7 @@ class TaskQueueWindow(QMainWindow):
         for task_info in self.available_tasks:
             item = QListWidgetItem(f"{task_info['name']} ({task_info['key']})")
             item.setToolTip(task_info.get("description", ""))
+            item.setData(Qt.ItemDataRole.UserRole, task_info)
             self.available_list.addItem(item)
 
     def _update_selected_list(self) -> None:
@@ -284,7 +273,17 @@ class TaskQueueWindow(QMainWindow):
         for task_info in self.selected_tasks:
             item = QListWidgetItem(f"{task_info['name']} ({task_info['key']})")
             item.setToolTip(task_info.get("description", ""))
+            item.setData(Qt.ItemDataRole.UserRole, task_info)
             self.selected_list.addItem(item)
+
+    def _sync_selected_tasks_from_widget(self) -> None:
+        """Persist the current visual order after drag-and-drop reordering."""
+        ordered_tasks = []
+        for row in range(self.selected_list.count()):
+            task_info = self.selected_list.item(row).data(Qt.ItemDataRole.UserRole)
+            if isinstance(task_info, dict):
+                ordered_tasks.append(task_info)
+        self.selected_tasks = ordered_tasks
 
     def add_selected_tasks(self) -> None:
         """Add selected available tasks to queue."""
@@ -302,6 +301,7 @@ class TaskQueueWindow(QMainWindow):
 
     def remove_selected_tasks(self) -> None:
         """Remove selected tasks from queue."""
+        self._sync_selected_tasks_from_widget()
         selected_indexes = self.selected_list.selectedIndexes()
         if not selected_indexes:
             return
@@ -315,6 +315,7 @@ class TaskQueueWindow(QMainWindow):
 
     def _get_selected_task_instances(self) -> list[GameTask]:
         """Create task instances from selected tasks."""
+        self._sync_selected_tasks_from_widget()
         instances = []
         for task_info in self.selected_tasks:
             try:
@@ -336,9 +337,16 @@ class TaskQueueWindow(QMainWindow):
 
         adb_path = self.adb_path_edit.text().strip() or "adb"
         serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
+        ocr_lang = self._current_ocr_lang()
 
         self.thread = QThread(self)
-        self.worker = QueueRunnerWorker(task_instances, adb_path, serial)
+        self.worker = QueueRunnerWorker(
+            task_instances,
+            adb_path,
+            serial,
+            self.ocr_enabled.isChecked(),
+            ocr_lang,
+        )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._append_log)
@@ -352,7 +360,7 @@ class TaskQueueWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
-        self._append_log("Task queue started.")
+        self._append_log(f"Task queue started. OCR={self.ocr_enabled.isChecked()}, lang={ocr_lang}")
 
     def pause_queue(self) -> None:
         """Pause the task queue."""
@@ -418,6 +426,11 @@ class TaskQueueWindow(QMainWindow):
     def _append_log(self, text: str) -> None:
         """Append text to log view."""
         self.log_view.append(text)
+
+    def _current_ocr_lang(self) -> str:
+        """Return OCR language code from the UI selection."""
+        lang_map = {"中文 (ch)": "ch", "English (en)": "en"}
+        return lang_map.get(self.ocr_lang.currentText(), "ch")
 
     def clear_log(self) -> None:
         """Clear all log messages."""

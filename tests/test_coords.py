@@ -1,4 +1,4 @@
-from game_bot.coords import apply_random_offset, scale_point
+from botCore.coords import apply_random_offset, scale_point
 
 
 def test_scale_point():

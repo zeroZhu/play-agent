@@ -4,10 +4,10 @@
 
 ### 1. 创建任务文件
 
-在 `tasks/` 目录下创建 Python 文件，例如 `tasks/my_task.py`：
+在任务目录下创建 Python 文件，例如 `src/ymjh_bot/task/my_task.py`：
 
 ```python
-from dslBot import GameTask, step
+from botCore import GameTask, step
 
 class MyTask(GameTask):
     """我的自定义任务。"""
@@ -22,7 +22,7 @@ class MyTask(GameTask):
         """步骤 1：关闭弹窗。"""
         while self.find_image("templates/btn_close.png"):
             self.click()
-            self.wait(0.5)
+            self.wait(500)
         return True
 
     @step()
@@ -30,7 +30,7 @@ class MyTask(GameTask):
         """步骤 2：执行任务。"""
         if self.find_image("templates/btn_start.png"):
             self.click()
-            self.wait(2)
+            self.wait(2000)
             return True
         return False
 ```
@@ -39,10 +39,10 @@ class MyTask(GameTask):
 
 ```bash
 # 运行 DSL 任务
-python -m src.game_bot.run --task tasks/my_task.py
+python -m game_bot.run --task src/ymjh_bot/task/my_task.py
 
 # 指定设备
-python -m src.game_bot.run --task tasks/my_task.py --serial 127.0.0.1:5555
+python -m game_bot.run --task src/ymjh_bot/task/my_task.py --serial 127.0.0.1:5555
 ```
 
 ## API 参考
@@ -90,33 +90,12 @@ def on_finish(self, results: list) -> None:
 if self.find_image("btn.png", threshold=0.8):
     self.click()
 
-# 获取图像位置
-pos = self.find_image_pos("btn.png")
-if pos:
-    print(f"Found at {pos}")
-
-# 查找并点击
-self.click_image("btn.png", retry=3)
-
-# 循环点击直到消失
-count = self.loop_click_image(
-    "btn_close.png",
-    max_count=10,
-    interval_seconds=2.0,
-)
-```
-
-### OCR 操作
-
-```python
-# 查找文本
-if self.find_ocr_text("开始", min_confidence=0.7):
+# 等待图像出现后点击
+if self.wait_image_appear("btn_start.png", timeout_ms=5000):
     self.click()
 
-# 获取所有文本
-texts = self.get_ocr_text()
-for t in texts:
-    print(f"{t['text']} ({t['confidence']:.2f})")
+# 等待图像连续消失
+self.wait_image_missing("popup.png", missing_threshold=3)
 ```
 
 ### 坐标操作
@@ -139,23 +118,20 @@ self.swipe(100, 500, 900, 500)
 
 ```python
 # 简单等待
-self.wait(2.0)
-
-# 带随机抖动的等待
-self.wait(2.0, jitter=(100, 300))
+self.wait(2000)
 
 # 等待图像出现
-if self.wait_for_image("btn.png", timeout_ms=5000):
+if self.wait_image_appear("btn.png", timeout_ms=5000):
     self.click()
 
 # 等待图像消失
-self.wait_for_missing("popup.png", missing_threshold=3)
+self.wait_image_missing("popup.png", missing_threshold=3)
 ```
 
 ## 完整示例
 
 ```python
-from game_bot.dsl import GameTask, step
+from botCore import GameTask, step
 
 class YmjhDailyTask(GameTask):
     """一梦江湖日常任务。"""
@@ -178,9 +154,9 @@ class YmjhDailyTask(GameTask):
         """关闭所有弹窗。"""
         count = 0
         while self.find_image(self.CLOSE_BTN, threshold=0.7):
-            self.click_with_offset(3)
+            self.click(offset=3)
             count += 1
-            self.wait(0.5)
+            self.wait(500)
             if count > 10:
                 break
         self._log(f"关闭了 {count} 个弹窗")
@@ -191,19 +167,17 @@ class YmjhDailyTask(GameTask):
         """开始任务。"""
         if self.find_image(self.START_BTN):
             self.click()
-            self.wait(2)
+            self.wait(2000)
             return True
         return False
 
     @step(retry=2, timeout_ms=30000)
     def do_battle(self) -> bool:
         """执行战斗任务。"""
-        # 循环点击确认按钮直到消失
-        self.loop_click_image(
+        self.wait_image_missing(
             self.OK_BTN,
-            max_count=10,
-            interval_seconds=1.5,
             missing_threshold=3,
+            callback=lambda found, count: self.click() if found else None,
         )
         return True
 
@@ -211,18 +185,6 @@ class YmjhDailyTask(GameTask):
         success = sum(1 for r in results if r.success)
         self._log(f"=== 任务完成：{success}/{len(results)} ===")
 ```
-
-## YAML vs DSL 对比
-
-| 特性 | YAML | Python DSL |
-|------|------|-----------|
-| 上手难度 | 低 | 中 |
-| 条件判断 | 有限 | 完整 if/else |
-| 循环 | 预设类型 | 任意循环 |
-| 变量复用 | 有限 | 完整支持 |
-| 调试 | 困难 | 断点/单步 |
-| IDE 提示 | 无 | 自动补全 |
-| 错误处理 | 无 | try/except |
 
 ## 最佳实践
 

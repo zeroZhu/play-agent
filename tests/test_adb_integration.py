@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from game_bot.adb_client import ADBClient
+from botCore import ADBClient
 
 
 pytestmark = pytest.mark.integration

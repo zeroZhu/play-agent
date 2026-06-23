@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Callable
 
-from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult
-from dslBot.base import GameTask, StepJumpException, StepStopException
+from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, GameTask
+from botCore.execution import DslStepExecutor, resolve_step_jump
 
 
 class TaskQueueRunner:
@@ -41,6 +41,10 @@ class TaskQueueRunner:
         self.current_task_index = 0
         self.current_step_index = 0
         self.total_tasks = len(task_list)
+        self._executor = DslStepExecutor(
+            should_stop=lambda: self._stop_requested or self._paused,
+            emit=self._emit,
+        )
 
     def stop(self) -> None:
         """停止任务队列。"""
@@ -181,29 +185,13 @@ class TaskQueueRunner:
                     target = task._jump_target
                     task._jump_target = None
 
-                    if target == StepJumpException.JUMP_TO_END:
-                        self._emit(f"    Jump to end of loop")
+                    jump = resolve_step_jump(target, steps, step_index)
+                    if jump.message:
+                        self._emit(f"    {jump.message}")
+                    if jump.end_loop:
                         break
-                    elif target == StepJumpException.JUMP_TO_START:
-                        step_index = 0
-                        continue
-                    elif target == StepJumpException.JUMP_TO_PREV:
-                        step_index = max(0, step_index - 1)
-                        continue
-                    elif target == StepJumpException.JUMP_TO_NEXT:
-                        step_index += 1
-                        continue
-                    else:
-                        found = False
-                        for i, (name, _, _) in enumerate(steps):
-                            if name == target:
-                                step_index = i
-                                found = True
-                                break
-                        if not found:
-                            self._emit(f"    WARN: Jump target '{target}' not found")
-                        step_index += 1
-                        continue
+                    step_index = jump.next_index
+                    continue
 
                 step_index += 1
 
@@ -225,89 +213,15 @@ class TaskQueueRunner:
     def _execute_step(
         self,
         name: str,
-        func: Callable[[GameTask], Any],
+        func: Callable[[GameTask], object],
         meta: dict,
     ) -> ExecutionResult:
         """执行单个步骤。"""
-        start = time.perf_counter()
-
-        retry_raw = meta.get("retry", 0)
-        if retry_raw is None or retry_raw == -1:
-            attempts = -1
-        else:
-            attempts = max(1, int(retry_raw) + 1)
-
-        timeout_raw = meta.get("timeout_ms", 10000)
-        deadline = None if timeout_raw is None else start + int(timeout_raw) / 1000.0
-
-        last_error: Exception | None = None
-
-        while attempts == -1 or attempts > 0:
-            if self._stop_requested or self._paused:
-                return ExecutionResult(
-                    success=False,
-                    elapsed_ms=int((time.perf_counter() - start) * 1000),
-                    reason="Stopped by user",
-                )
-
-            if deadline is not None and time.perf_counter() > deadline:
-                break
-
-            try:
-                result_value = func(self.task_list[self.current_task_index])
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-                if result_value is None:
-                    return ExecutionResult(
-                        success=True,
-                        elapsed_ms=elapsed_ms,
-                        reason="Completed",
-                    )
-                elif isinstance(result_value, bool):
-                    if result_value:
-                        return ExecutionResult(
-                            success=True,
-                            elapsed_ms=elapsed_ms,
-                            reason="Completed",
-                        )
-                    else:
-                        last_error = Exception("Step returned False")
-                else:
-                    return ExecutionResult(
-                        success=True,
-                        elapsed_ms=elapsed_ms,
-                        reason=f"Completed with result: {result_value}",
-                    )
-
-            except StepJumpException as e:
-                self.task_list[self.current_task_index]._jump_target = e.target
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                return ExecutionResult(
-                    success=True,
-                    elapsed_ms=elapsed_ms,
-                    reason=f"Jump to {e.target}",
-                )
-            except StepStopException:
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                return ExecutionResult(
-                    success=False,
-                    elapsed_ms=elapsed_ms,
-                    reason="Stopped by user",
-                )
-            except Exception as e:
-                last_error = e
-                self._emit(f"    [{name}] Error: {e}")
-
-            if attempts > 0:
-                attempts -= 1
-            time.sleep(0.15)
-
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        reason = str(last_error) if last_error else "Timeout exceeded"
-        return ExecutionResult(
-            success=False,
-            elapsed_ms=elapsed_ms,
-            reason=reason,
+        return self._executor.execute(
+            self.task_list[self.current_task_index],
+            name,
+            func,
+            meta,
         )
 
     def _emit(self, message: str) -> None:

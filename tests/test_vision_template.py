@@ -4,7 +4,7 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
-from game_bot.vision import VisionEngine
+from botCore import VisionEngine
 
 
 def test_template_match_found():

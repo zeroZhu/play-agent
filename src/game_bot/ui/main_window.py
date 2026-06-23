@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -18,8 +17,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -27,10 +24,8 @@ from PySide6.QtWidgets import (
 import cv2
 import datetime
 
-from yamlBot import YamlRunner, load_task
-from botCore import ADBClient, ADBError, RunLogger, TaskSpec, VisionEngine
-from dslBot.base import GameTask
-from dslBot.runner import DSLTaskRunner
+from botCore import ADBClient, ADBError, DSLTaskRunner, GameTask, RunLogger, VisionEngine
+from game_bot.task_loader import load_task_for_gui
 
 
 class RunnerWorker(QObject):
@@ -38,40 +33,26 @@ class RunnerWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, task: TaskSpec | GameTask, adb_path: str, serial: str | None):
+    def __init__(self, task: GameTask, adb_path: str, serial: str | None):
         super().__init__()
         self.task = task
         self.adb_path = adb_path
         self.serial = serial
-        self.runner: TaskRunner | DSLTaskRunner | None = None
+        self.runner: DSLTaskRunner | None = None
 
     @Slot()
     def run(self) -> None:
         try:
-            if isinstance(self.task, GameTask):
-                # DSL task
-                adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
-                vision = VisionEngine(enable_ocr=self.task.ocr_enabled, ocr_lang=self.task.ocr_lang)
-                logger = RunLogger()
-                self.runner = DSLTaskRunner(
-                    task=self.task,
-                    adb_client=adb,
-                    vision=vision,
-                    logger=logger,
-                    event_callback=self.progress.emit,
-                )
-            else:
-                # YAML task
-                adb = ADBClient(adb_path=self.task.device.adb_path, serial=self.task.device.serial)
-                vision = VisionEngine(enable_ocr=self.task.ocr.enabled, ocr_lang=self.task.ocr.lang)
-                logger = RunLogger()
-                self.runner = YamlRunner(
-                    task=self.task,
-                    adb_client=adb,
-                    vision=vision,
-                    logger=logger,
-                    event_callback=self.progress.emit,
-                )
+            adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
+            vision = VisionEngine(enable_ocr=self.task.ocr_enabled, ocr_lang=self.task.ocr_lang)
+            logger = RunLogger()
+            self.runner = DSLTaskRunner(
+                task=self.task,
+                adb_client=adb,
+                vision=vision,
+                logger=logger,
+                event_callback=self.progress.emit,
+            )
             self.runner.run()
             self.finished.emit()
         except Exception as exc:
@@ -81,14 +62,14 @@ class RunnerWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Game Bot (MuMu First)")
+        self.setWindowTitle("PlayAgent Dev Debugger")
         self.resize(900, 700)
 
         # Load .env file for default configuration
         self._load_env_config()
 
         self.current_file: Path | None = None
-        self.task_type: str = "yaml"  # "yaml" or "python"
+        self.task: GameTask | None = None
         self.worker: RunnerWorker | None = None
         self.thread: QThread | None = None
 
@@ -103,7 +84,7 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Task Configuration")
         grid = QGridLayout(box)
 
-        self.task_type_label = QLabel("YAML Task")
+        self.task_type_label = QLabel("Python DSL Task")
         self.task_type_label.setStyleSheet("font-weight: bold; font-size: 12px;")
 
         self.adb_path_edit = QLineEdit(self._env_adb_path or "adb")
@@ -235,25 +216,14 @@ class MainWindow(QMainWindow):
             self,
             "Open Task",
             str(Path.cwd()),
-            "Task Files (*.yaml *.yml *.py);;YAML (*.yaml *.yml);;Python (*.py)"
+            "Python Task Files (*.py)"
         )
         if not path:
             return
 
         try:
-            suffix = Path(path).suffix.lower()
-            if suffix in (".yaml", ".yml"):
-                self.task = load_task(path)
-                self.task_type = "yaml"
-                self.task_type_label.setText(f"YAML Task: {Path(path).name}")
-            elif suffix == ".py":
-                self.task = load_python_task(path)
-                self.task_type = "python"
-                self.task_type_label.setText(f"Python DSL: {Path(path).name}")
-            else:
-                QMessageBox.warning(self, "Unsupported Format", "Only .yaml, .yml, and .py files are supported.")
-                return
-
+            self.task = load_task_for_gui(path)
+            self.task_type_label.setText(f"Python DSL: {Path(path).name}")
             self.current_file = Path(path)
             self._append_log(f"Loaded task: {path}")
         except Exception as exc:
@@ -363,17 +333,8 @@ class MainWindow(QMainWindow):
         ocr_lang_text = self.ocr_lang.currentText()
         ocr_lang = ocr_lang_map.get(ocr_lang_text, "ch")
 
-        if isinstance(self.task, GameTask):
-            # DSL task
-            self.task.ocr_enabled = self.ocr_enabled.isChecked()
-            self.task.ocr_lang = ocr_lang
-        else:
-            # YAML task
-            self.task.device.adb_path = self.adb_path_edit.text().strip() or "adb"
-            serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
-            self.task.device.serial = serial
-            self.task.ocr.enabled = self.ocr_enabled.isChecked()
-            self.task.ocr.lang = ocr_lang
+        self.task.ocr_enabled = self.ocr_enabled.isChecked()
+        self.task.ocr_lang = ocr_lang
 
         self._append_log(f"OCR Lang: {ocr_lang}, Enabled: {self.ocr_enabled.isChecked()}")
 
@@ -383,24 +344,3 @@ class MainWindow(QMainWindow):
     def clear_log(self) -> None:
         """Clear all log messages."""
         self.log_view.clear()
-
-
-def load_python_task(path: str | Path) -> GameTask:
-    """Load a Python DSL task and return an instance."""
-    import importlib.util
-
-    p = Path(path)
-    spec = importlib.util.spec_from_file_location("dsl_task_module", p)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load module from {p}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    # Find the first GameTask subclass
-    for name in dir(module):
-        attr = getattr(module, name)
-        if isinstance(attr, type) and issubclass(attr, GameTask) and attr is not GameTask:
-            return attr()
-
-    raise ValueError(f"No GameTask subclass found in {p}")

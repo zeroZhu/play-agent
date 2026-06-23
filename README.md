@@ -1,55 +1,52 @@
-# Game Bot (MuMu First)
+# PlayAgent
 
-Python-based Android emulator auto-farm tool with:
+Python-based Android emulator automation toolkit.
 
-- PC config GUI (`PySide6`)
-- ADB control (tap/swipe/screenshot)
-- Image match (`OpenCV`) and text match (`PaddleOCR`)
-- YAML task specs + runtime logs
+- `botCore`: shared foundation and Python DSL runtime
+- `game_bot`: development-only GUI/CLI for debugging task scripts
+- `ymjh_bot`: Yi Meng Jiang Hu scripts, queue runner, templates, and UI
 
-## V1 Scope
+## Scope
 
-V1 runs on Windows PC and controls emulator through ADB.  
-MuMu is the first target, other emulators can be added by setting the device serial/port.
+PlayAgent controls Android emulators through ADB. The root `launch_gui.py` entrypoint is a developer debugger for loading and running Python task scripts during development. Product/game-specific scripts and UI live inside their own sub bot packages.
+
+YAML task support has been removed. Tasks are Python DSL classes.
 
 ## Quick Start
-
-1. Install Python 3.10+.
-2. Create project virtual env and install dependencies by `uv`:
 
 ```powershell
 uv venv .venv
 uv sync --dev --no-install-project
 ```
 
-3. Make sure `adb` is available in PATH (or configure `adb_path` in GUI).
-4. Start GUI:
+Start the development debugger:
 
 ```powershell
 uv run --no-sync python launch_gui.py
 ```
 
-## Task Spec (YAML)
+Run a Python DSL task from the CLI:
 
-Top-level structure:
+```powershell
+uv run --no-sync python -m game_bot.run --task src/ymjh_bot/task/start.py
+```
 
-- `meta`: task meta settings
-- `device`: adb path + serial
-- `ocr`: OCR settings
-- `steps`: executable steps
+## DSL Example
 
-See sample:
+```python
+from botCore import GameTask, step
 
-- [sample_tasks/demo_task.yaml](D:/workplace_syzhu/play-agent/sample_tasks/demo_task.yaml)
+class MyTask(GameTask):
+    design_resolution = (1280, 720)
+    loop_count = 1
 
-## Supported Step Types
-
-- `find_image_click`
-- `find_text_click`
-- `drag`
-- `wait`
-- `loop`
-- `conditional`
+    @step(retry=3, timeout_ms=10000)
+    def click_start(self) -> bool:
+        if self.find_image("templates/btn_start.png"):
+            self.click()
+            return True
+        return False
+```
 
 ## Logs
 
@@ -61,14 +58,7 @@ Runtime logs are written to `logs/run_YYYYMMDD_HHMMSS`:
 ## Tests
 
 ```powershell
-uv run --no-sync pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## V2 (APK)
-
-V2 scaffold is included under:
-
-- [src/mobile_v2](D:/workplace_syzhu/play-agent/src/mobile_v2)
-
-It uses `Kivy + Buildozer` for APK packaging and focuses on in-app config/scheduling.  
-Cross-app touch automation still depends on Android permissions and may not fully replace PC+ADB control.
+Integration tests that touch a real emulator are skipped unless `ADB_SERIAL` is set.

@@ -1,4 +1,4 @@
-from game_bot.vision import TextItem, VisionEngine
+from botCore import TextItem, VisionEngine
 
 
 def test_find_text_partial_best_confidence():

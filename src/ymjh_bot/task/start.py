@@ -1,11 +1,11 @@
 """
 一梦江湖启动任务 - Python DSL 实现
 
-原 YAML 文件：src/task/start.yaml
+原 YAML 版本已移除，当前文件是唯一任务定义。
 """
 
 from pathlib import Path
-from dslBot import GameTask, step
+from botCore import GameTask, step
 
 # 获取模板目录的绝对路径
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"

@@ -3,7 +3,8 @@
 """
 
 from pathlib import Path
-from dslBot import GameTask, step, StepJumpException
+
+from botCore import GameTask, step, StepJumpException
 
 # 获取模板目录的绝对路径
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"

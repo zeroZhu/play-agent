@@ -4,16 +4,22 @@ import os
 from pathlib import Path
 
 import cv2
-import numpy as np
+import pytest
 
-from game_bot.adb_client import ADBClient
-from game_bot.vision import VisionEngine, TextItem
+from botCore import ADBClient, VisionEngine
 
 
-def test_screenshot_and_ocr():
+pytestmark = pytest.mark.integration
+
+
+@pytest.mark.skipif(not os.getenv("ADB_SERIAL"), reason="Set ADB_SERIAL for screenshot/OCR test.")
+def test_screenshot_and_ocr(tmp_path):
     """测试截图和 OCR 功能"""
     # 初始化 ADB
-    adb = ADBClient(adb_path="adb", serial="127.0.0.1:16384")
+    adb = ADBClient(
+        adb_path=os.getenv("ADB_PATH", "adb"),
+        serial=os.getenv("ADB_SERIAL"),
+    )
     adb.ensure_device()
 
     # 截图
@@ -22,7 +28,7 @@ def test_screenshot_and_ocr():
     print(f"Screenshot size: {screenshot.shape}")
 
     # 保存截图
-    output_path = Path(__file__).parent / "screenshot.png"
+    output_path = tmp_path / "screenshot.png"
     cv2.imwrite(str(output_path), screenshot)
     print(f"Screenshot saved to: {output_path}")
 

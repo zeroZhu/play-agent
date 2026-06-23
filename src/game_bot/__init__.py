@@ -1,5 +1,1 @@
-"""Game bot package."""
-
-from botCore import ExecutionResult, StepSpec, TaskSpec
-
-__all__ = ["TaskSpec", "StepSpec", "ExecutionResult"]
+"""Development-only GUI and CLI helpers for Python task scripts."""
