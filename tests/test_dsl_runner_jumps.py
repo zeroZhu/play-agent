@@ -42,6 +42,25 @@ class JumpTask(GameTask):
         self.calls.append("target")
 
 
+class HookTask(GameTask):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def before_start(self):
+        self.calls.append("before_start")
+
+    def on_start(self):
+        self.calls.append("on_start")
+
+    def before_step(self, step_name, step_meta):
+        self.calls.append(f"before_step:{step_name}")
+
+    @step(retry=0)
+    def run_once(self):
+        self.calls.append("run_once")
+
+
 def test_dsl_named_jump_executes_target_step():
     task = JumpTask()
     runner = DSLTaskRunner(
@@ -56,6 +75,20 @@ def test_dsl_named_jump_executes_target_step():
     assert task.calls == ["first", "target"]
 
 
+def test_dsl_runner_calls_before_start_before_on_start():
+    task = HookTask()
+    runner = DSLTaskRunner(
+        task,
+        FakeADB(),  # type: ignore[arg-type]
+        FakeVision(),  # type: ignore[arg-type]
+    )
+
+    results = runner.run()
+
+    assert [r.success for r in results] == [True]
+    assert task.calls == ["before_start", "on_start", "before_step:run_once", "run_once"]
+
+
 def test_queue_named_jump_executes_target_step():
     task = JumpTask()
     runner = TaskQueueRunner(
@@ -68,3 +101,17 @@ def test_queue_named_jump_executes_target_step():
 
     assert [r.success for r in results] == [True, True]
     assert task.calls == ["first", "target"]
+
+
+def test_queue_runner_calls_before_start_before_on_start():
+    task = HookTask()
+    runner = TaskQueueRunner(
+        [task],
+        FakeADB(),  # type: ignore[arg-type]
+        FakeVision(),  # type: ignore[arg-type]
+    )
+
+    results = runner.run()
+
+    assert [r.success for r in results] == [True]
+    assert task.calls == ["before_start", "on_start", "before_step:run_once", "run_once"]

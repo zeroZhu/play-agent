@@ -15,6 +15,9 @@ dependencies = [
   "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+ymjh-bot = "ymjh_bot.main:main"
+
 [dependency-groups]
 dev = ["pytest>=8.0"]
 

@@ -14,7 +14,7 @@ src/
 │   ├── models.py             # ExecutionResult
 │   ├── runner.py             # DSLTaskRunner
 │   ├── task.py               # GameTask / step / 跳转异常
-│   └── vision.py             # 模板匹配、OCR
+│   └── vision.py             # 模板匹配
 │
 ├── game_bot/                 # 开发调试入口
 │   ├── main.py               # 调试 GUI 入口
@@ -40,7 +40,7 @@ launch_gui.py                 # 开发调试 GUI 快捷入口
 `botCore` 是唯一基础层，封装所有可复用能力：
 
 - ADB：设备发现、连接、点击、滑动、截图
-- Vision：模板匹配、OCR 解析
+- Vision：模板匹配
 - DSL：`GameTask`、`@step`、跳转、暂停停止响应
 - Runner：`DSLTaskRunner`
 - Loader：`load_task_class()`、`load_task_instance()`

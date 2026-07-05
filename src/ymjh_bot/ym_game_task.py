@@ -1,0 +1,616 @@
+"""Shared task base for Yi Meng Jiang Hu automation."""
+
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from botCore import GameTask
+
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+@dataclass(slots=True)
+class LoginState:
+    """Detected login-flow state from one screenshot."""
+
+    name: str
+    description: str
+    score: float
+    center: tuple[int, int] | None
+    template_path: str | None = None
+
+
+class YmGameTask(GameTask):
+    """Base class for Yi Meng Jiang Hu tasks."""
+
+    __abstract_task__ = True
+
+    design_resolution = (1280, 720)
+    loop_count = 1
+
+    PACKAGE_NAME = "com.netease.wyclx"
+    auto_ensure_game_started = True
+    auto_recover_health = True
+    task_visible = True
+
+    TEMPLATES_DIR = TEMPLATES_DIR
+
+    BTN_OK = str(TEMPLATES_DIR / "btn_OK.png")
+    BTN_CLOSE = str(TEMPLATES_DIR / "btn_close.png")
+    BTN_PANE_CLOSE = str(TEMPLATES_DIR / "btn_pane_close.png")
+    BTN_MODAL_OK = str(TEMPLATES_DIR / "btn_modal_ok.png")
+    BTN_WELCOME_CLOSE = str(TEMPLATES_DIR / "btn_welcome_close.png")
+    BTN_ROLE_CONFIRM = str(TEMPLATES_DIR / "btn_role_confirm.png")
+    BTN_HD = str(TEMPLATES_DIR / "btn_HD.png")
+    BTN_JRYX = str(TEMPLATES_DIR / "btn_JRYX.png")
+    BTN_TRJH = str(TEMPLATES_DIR / "btn_TRJH.png")
+    BTN_ZZDL = str(TEMPLATES_DIR / "btn_ZZDL.png")
+    BTN_BIAOQING = str(TEMPLATES_DIR / "btn_biaoqing.png")
+    ICON_TASK_ACTIVE = str(TEMPLATES_DIR / "icon_task_active.png")
+    ICON_TASK_RW = str(TEMPLATES_DIR / "icon_task_rw.png")
+    ICON_TASK_JH = str(TEMPLATES_DIR / "icon_task_jh.png")
+    ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
+    TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
+    TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "tab_bangpai_active.png")
+
+    # 固定坐标点 (设计分辨率 1280x720 下)
+    POINT_WAKE_SCREEN = (640, 360)
+    POINT_HUODONG_BANGPAI = (326, 680)
+    POINT_MAIN_TASK = (22, 160)
+    POINT_MAIN_TEAM = (22, 276)
+    POINT_TASK_TAB_TASK = (88, 124)
+    POINT_TASK_TAB_JIANGHU = (174, 124)
+    POINT_TASK_TAB_QIYU = (258, 124)
+    POINT_EMOTION_SINGLE_TAB = (405, 505)
+    POINT_EMOTION_MEDITATE = (725, 578)
+    POINT_EMOTION_COLLAPSE = (934, 503)
+    POINT_LIGHTNESS = (1240, 420)
+
+    ROI_HEALTH_BAR = (74, 27, 260, 20)
+    ROI_BIAOQING_BUTTON = (330, 650, 90, 70)
+    HEALTH_FULL_WIDTH = 255
+    HEALTH_RECOVER_THRESHOLD = 0.80
+    HEALTH_FULL_THRESHOLD = 0.90
+    HEALTH_COLUMN_MIN_FILL_RATIO = 0.30
+    HEALTH_RECOVER_TIMEOUT_MS = 300000
+    HEALTH_RECOVER_POLL_INTERVAL_MS = 2000
+    HEALTH_RED_MIN_VALUE = 120
+    HEALTH_RED_MIN_DELTA = 45
+
+    LOGIN_STATE_NOTICE = "notice"
+    LOGIN_STATE_LOGIN = "login"
+    LOGIN_STATE_ROLE_CONFIRM = "role_confirm"
+    LOGIN_STATE_ROLE = "role"
+    LOGIN_STATE_POPUP = "popup"
+    LOGIN_STATE_MAIN = "main"
+
+    LOGIN_TOTAL_TIMEOUT_MS = 300000
+    LOGIN_LOADING_TIMEOUT_MS = 120000
+    LOGIN_CLEANUP_TIMEOUT_MS = 60000
+    LOGIN_POLL_INTERVAL_MS = 500
+    LOGIN_WAIT_AFTER_CLICK_MS = 1500
+    LOGIN_WAIT_AFTER_CLOSE_MS = 800
+
+    def __init__(self, default_interval_ms: int | None = None):
+        super().__init__(default_interval_ms=default_interval_ms)
+        self._recovering_health = False
+
+    def before_start(self) -> None:
+        """Ensure the game is ready before task-specific setup runs."""
+        if self.auto_ensure_game_started:
+            self.ensure_game_started()
+
+    def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
+        """Run shared Yi Meng Jiang Hu guards before each task step."""
+        super().before_step(step_name, step_meta)
+        self.recover_health_if_needed()
+
+    def detect_health_ratio(self) -> float | None:
+        """Return the visible HP bar fill ratio, or None when it cannot be read."""
+        screenshot = self.screenshot()
+        if screenshot.ndim < 3 or screenshot.shape[2] < 3:
+            return None
+
+        screen_height, screen_width = screenshot.shape[:2]
+        x, y, width, height = self._scale_roi_to_resolution(
+            self.ROI_HEALTH_BAR,
+            (screen_width, screen_height),
+        )
+        x2 = min(screen_width, x + width)
+        y2 = min(screen_height, y + height)
+        if x < 0 or y < 0 or x >= x2 or y >= y2:
+            return None
+
+        region = screenshot[y:y2, x:x2, :3]
+        if region.size == 0:
+            return None
+
+        red_columns = self._red_health_columns(region)
+        filled_width = self._longest_true_run(red_columns)
+        full_width = max(
+            1,
+            int(round(self.HEALTH_FULL_WIDTH * screen_width / self.design_resolution[0])),
+        )
+        return min(1.0, filled_width / full_width)
+
+    def recover_health_if_needed(self) -> None:
+        """Meditate until HP is full when the main-scene HP bar is low."""
+        if not self.auto_recover_health or self._recovering_health:
+            return
+
+        try:
+            health_ratio = self.detect_health_ratio()
+        except Exception as exc:
+            self._log(f"血量检测失败，跳过自动打坐：{exc}")
+            return
+
+        if health_ratio is None:
+            self._log("未能识别血条，跳过自动打坐")
+            return
+        if health_ratio >= self.HEALTH_RECOVER_THRESHOLD:
+            return
+
+        self._recovering_health = True
+        try:
+            self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
+            if not self.wait_find_image_in_roi(
+                self.BTN_BIAOQING,
+                self.ROI_BIAOQING_BUTTON,
+                timeout_ms=3000,
+                description="表情按钮",
+                threshold=0.9,
+                interval_ms=300,
+            ):
+                self._log("未找到主界面表情按钮，跳过自动打坐")
+                return
+
+            self.click(0)
+            self.wait(800)
+            self.click_point(self.POINT_EMOTION_SINGLE_TAB[0], self.POINT_EMOTION_SINGLE_TAB[1], offset=0)
+            self.wait(800)
+            self.click_point(self.POINT_EMOTION_MEDITATE[0], self.POINT_EMOTION_MEDITATE[1], offset=0)
+            self.wait(1000)
+
+            if not self.wait_health_full():
+                raise RuntimeError("打坐回血超时：血量未回满")
+
+            self.click_point(self.POINT_EMOTION_COLLAPSE[0], self.POINT_EMOTION_COLLAPSE[1], offset=0)
+            self.wait(500)
+            self.click_point(self.POINT_LIGHTNESS[0], self.POINT_LIGHTNESS[1], offset=0)
+            self.wait(1000)
+            self._log("血量已回满，退出打坐")
+        finally:
+            self._recovering_health = False
+
+    def wait_health_full(self) -> bool:
+        """Wait until HP reaches the configured full threshold."""
+        deadline = self._make_deadline(self.HEALTH_RECOVER_TIMEOUT_MS)
+        while not self._is_deadline_expired(deadline):
+            health_ratio = self.detect_health_ratio()
+            if health_ratio is not None and health_ratio >= self.HEALTH_FULL_THRESHOLD:
+                return True
+            if health_ratio is not None:
+                self._log(f"打坐回血中：{health_ratio:.1%}")
+            self.wait(self.HEALTH_RECOVER_POLL_INTERVAL_MS)
+        return False
+
+    def _red_health_columns(self, region: np.ndarray) -> np.ndarray:
+        channels = region.astype(np.int16)
+        blue = channels[:, :, 0]
+        green = channels[:, :, 1]
+        red = channels[:, :, 2]
+        red_mask = (
+            (red >= self.HEALTH_RED_MIN_VALUE)
+            & (red >= green + self.HEALTH_RED_MIN_DELTA)
+            & (red >= blue + self.HEALTH_RED_MIN_DELTA)
+        )
+        min_pixels = max(1, int(round(region.shape[0] * self.HEALTH_COLUMN_MIN_FILL_RATIO)))
+        return red_mask.sum(axis=0) >= min_pixels
+
+    @staticmethod
+    def _longest_true_run(values: np.ndarray) -> int:
+        longest = 0
+        current = 0
+        for value in values:
+            if bool(value):
+                current += 1
+                longest = max(longest, current)
+            else:
+                current = 0
+        return longest
+
+    def _scale_roi_to_resolution(
+        self,
+        roi: tuple[int, int, int, int],
+        resolution: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        screen_width, screen_height = resolution
+        design_width, design_height = self.design_resolution
+        x, y, width, height = roi
+        return (
+            int(round(x * screen_width / design_width)),
+            int(round(y * screen_height / design_height)),
+            int(round(width * screen_width / design_width)),
+            int(round(height * screen_height / design_height)),
+        )
+
+    def is_game_process_running(self) -> bool:
+        """Return whether the game process currently exists on the device."""
+        try:
+            return bool(self.shell(f"pidof {self.PACKAGE_NAME}").strip())
+        except Exception:
+            return False
+
+    @classmethod
+    def _extract_package_from_window_line(cls, line: str) -> str | None:
+        """Extract the package name from a dumpsys window focus line."""
+        match = re.search(r"\b([A-Za-z][\w]*(?:\.[\w]+)+)/", line)
+        if not match:
+            return None
+        return match.group(1)
+
+    @classmethod
+    def _extract_foreground_package(cls, window_dump: str) -> str | None:
+        """Return the focused package from a dumpsys window dump."""
+        for marker in ("mCurrentFocus=", "mFocusedApp="):
+            for line in window_dump.splitlines():
+                if marker not in line:
+                    continue
+                package_name = cls._extract_package_from_window_line(line)
+                if package_name:
+                    return package_name
+        return None
+
+    def get_foreground_package(self) -> str | None:
+        """Return the current foreground package, or None when unavailable."""
+        try:
+            return self._extract_foreground_package(self.shell("dumpsys window"))
+        except Exception:
+            return None
+
+    def is_game_foreground(self) -> bool:
+        """Return whether the game package owns the focused window."""
+        return self.get_foreground_package() == self.PACKAGE_NAME
+
+    def is_game_main_ready(self, *, timeout_ms: int = 2000, threshold: float = 0.8) -> bool:
+        """Return whether the game main scene is visible and free of startup popups."""
+        deadline = self._make_deadline(timeout_ms)
+        while True:
+            state = self.detect_login_state(include_modal_controls=True, threshold=threshold)
+            if state and state.name == self.LOGIN_STATE_MAIN:
+                return True
+            if state is not None or self._is_deadline_expired(deadline):
+                return False
+            self.wait(self.LOGIN_POLL_INTERVAL_MS)
+
+    def ensure_game_started(self, *, force: bool = False) -> None:
+        """Start and enter the game when it is not ready in the foreground."""
+        if not force and self.is_game_foreground():
+            if self.is_game_main_ready():
+                self._log("检测到游戏已在前台，跳过启动")
+                return
+            self._log("检测到游戏在前台但未进入主界面，继续进入游戏")
+        else:
+            self.start_game_app()
+
+        self.enter_game()
+
+    def start_game_app(self, wait_after_launch_ms: int = 5000) -> None:
+        """Launch the Yi Meng Jiang Hu Android package."""
+        self._log("启动应用")
+        self.shell(f"monkey -p {self.PACKAGE_NAME} -c android.intent.category.LAUNCHER 1")
+        self.wait(wait_after_launch_ms)
+        self._log("应用启动完成")
+
+    def enter_game(self) -> None:
+        """Enter the game main scene from the launcher/login screens."""
+        self._log("进入游戏主界面")
+        deadline = self._make_deadline(self.LOGIN_TOTAL_TIMEOUT_MS)
+        loading_started_at: float | None = None
+        last_state_name: str | None = None
+
+        while not self._is_deadline_expired(deadline):
+            state = self.detect_login_state(include_modal_controls=True)
+            if state is None:
+                if loading_started_at is None:
+                    loading_started_at = time.perf_counter()
+                    self._log("等待登录流程加载...")
+                elif self._elapsed_ms(loading_started_at) > self.LOGIN_LOADING_TIMEOUT_MS:
+                    raise RuntimeError("登录流程超时：长时间未识别到可操作界面")
+                self.wait(self.LOGIN_POLL_INTERVAL_MS)
+                continue
+
+            loading_started_at = None
+            if state.name != last_state_name:
+                self._log(f"登录状态：{state.description}")
+                last_state_name = state.name
+
+            if state.name == self.LOGIN_STATE_NOTICE:
+                self.tap()
+                self.wait(self.LOGIN_WAIT_AFTER_CLICK_MS)
+                continue
+
+            if state.name == self.LOGIN_STATE_LOGIN:
+                self.tap()
+                self.wait(self.LOGIN_WAIT_AFTER_CLICK_MS)
+                continue
+
+            if state.name == self.LOGIN_STATE_ROLE_CONFIRM:
+                self.tap()
+                self.wait(self.LOGIN_WAIT_AFTER_CLICK_MS)
+                continue
+
+            if state.name == self.LOGIN_STATE_ROLE:
+                self.tap()
+                self.wait(self.LOGIN_WAIT_AFTER_CLICK_MS)
+                continue
+
+            if state.name in {self.LOGIN_STATE_POPUP, self.LOGIN_STATE_MAIN}:
+                cleanup_timeout = min(self.LOGIN_CLEANUP_TIMEOUT_MS, self._remaining_ms(deadline))
+                if self.close_startup_panels(timeout_ms=cleanup_timeout):
+                    self._log("登录流程结束，主界面已清理")
+                    return
+                last_state_name = None
+                continue
+
+            self.wait(self.LOGIN_POLL_INTERVAL_MS)
+
+        raise RuntimeError("登录流程超时：未能进入干净主界面")
+
+    def detect_login_state(
+        self,
+        *,
+        include_modal_controls: bool = False,
+        threshold: float = 0.8,
+    ) -> LoginState | None:
+        """Detect the current login-flow state from a single screenshot."""
+        screenshot = self.screenshot()
+        for state_name, description, templates in self._login_state_targets(include_modal_controls):
+            match = self._vision.match_template(screenshot, templates, threshold=threshold)
+            self._last_match_score = match.score
+            if not match.found or not match.center:
+                continue
+            self._last_match_center = match.center
+            return LoginState(
+                name=state_name,
+                description=description,
+                score=match.score,
+                center=match.center,
+                template_path=match.template_path,
+            )
+
+        self._last_match_center = None
+        return None
+
+    def close_startup_panels(
+        self,
+        *,
+        timeout_ms: int = LOGIN_CLEANUP_TIMEOUT_MS,
+        threshold: float = 0.8,
+    ) -> bool:
+        """Close startup popups until the clean main scene is stable."""
+        deadline = self._make_deadline(timeout_ms)
+        consecutive_clean = 0
+
+        while not self._is_deadline_expired(deadline):
+            state = self.detect_login_state(include_modal_controls=True, threshold=threshold)
+            if state is None:
+                consecutive_clean = 0
+                self.wait(self.LOGIN_POLL_INTERVAL_MS)
+                continue
+
+            if state.name == self.LOGIN_STATE_POPUP:
+                consecutive_clean = 0
+                self._log(f"关闭启动弹窗：{state.description}")
+                self.tap()
+                self.wait(self.LOGIN_WAIT_AFTER_CLOSE_MS)
+                continue
+
+            if state.name == self.LOGIN_STATE_MAIN:
+                consecutive_clean += 1
+                if consecutive_clean >= 2:
+                    return True
+                self.wait(self.LOGIN_POLL_INTERVAL_MS)
+                continue
+
+            return False
+
+        raise RuntimeError("登录后活动弹窗清理超时")
+
+    def _login_state_targets(
+        self,
+        include_modal_controls: bool,
+    ) -> tuple[tuple[str, str, list[str]], ...]:
+        popup_targets = self._startup_close_targets(include_modal_controls)
+        return (
+            (self.LOGIN_STATE_NOTICE, "公告页 - 朕知道了", [self.BTN_ZZDL]),
+            (self.LOGIN_STATE_LOGIN, "登录页 - 踏入江湖", [self.BTN_TRJH]),
+            (self.LOGIN_STATE_ROLE_CONFIRM, "在线角色确认 - 确定", [self.BTN_ROLE_CONFIRM]),
+            (self.LOGIN_STATE_ROLE, "角色页 - 进入游戏", [self.BTN_JRYX]),
+            (self.LOGIN_STATE_POPUP, "活动弹窗", popup_targets),
+            (self.LOGIN_STATE_MAIN, "干净主界面", [self.BTN_HD]),
+        )
+
+    def _startup_close_targets(self, include_modal_controls: bool) -> list[str]:
+        targets = [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        if include_modal_controls:
+            targets.extend([self.BTN_MODAL_OK, self.BTN_OK])
+        return targets
+
+    @staticmethod
+    def _make_deadline(timeout_ms: int | None) -> float | None:
+        return None if timeout_ms is None else time.perf_counter() + timeout_ms / 1000.0
+
+    @staticmethod
+    def _is_deadline_expired(deadline: float | None) -> bool:
+        return deadline is not None and time.perf_counter() >= deadline
+
+    @staticmethod
+    def _remaining_ms(deadline: float | None) -> int:
+        if deadline is None:
+            return 0
+        return max(0, int((deadline - time.perf_counter()) * 1000))
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        return int((time.perf_counter() - started_at) * 1000)
+
+    def tap_when_found(self, found: bool, missing_count: int) -> None:
+        """Tap the last matched target while it is still visible."""
+        if found:
+            self.tap()
+        else:
+            self._log(f"未找到点击目标图标 (连续 {missing_count} 次)")
+
+    def close_all_panels(
+        self,
+        templates: str | list[str] | None = None,
+        *,
+        timeout_ms: int = 5000,
+        wait_after_click_ms: int = 500,
+    ) -> None:
+        """Close visible panels by repeatedly tapping known close buttons."""
+        targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        while self.wait_image_appear(targets, timeout_ms=timeout_ms):
+            self.click()
+            self.wait(wait_after_click_ms)
+        self._log("已关闭所有弹窗")
+
+    def open_activity_panel(
+        self,
+        category_point: tuple[int, int] | None = None,
+        category_name: str | None = None,
+        *,
+        timeout_ms: int = 30000,
+        wait_after_open_ms: int = 2000,
+        wait_after_category_ms: int = 0,
+    ) -> None:
+        """Open the activity panel and optionally switch to a category tab."""
+        self.wait_image_appear(self.BTN_HD, timeout_ms=timeout_ms)
+        self.click(0)
+        self.wait(wait_after_open_ms)
+        self._log("已打开活动界面")
+
+        if category_point is None:
+            return
+
+        self.click_point(category_point[0], category_point[1])
+        if wait_after_category_ms > 0:
+            self.wait(wait_after_category_ms)
+        if category_name:
+            self._log(f"已打开活动 - {category_name}界面")
+
+    def switch_task_panel(
+        self,
+        panel: str,
+        *,
+        timeout_ms: int = 3000,
+        threshold: float = 0.8,
+        wait_after_click_ms: int = 500,
+    ) -> None:
+        """Open the task sidebar and switch to the requested task panel tab."""
+        panel_targets = {
+            "任务": (self.POINT_TASK_TAB_TASK, self.ICON_TASK_RW),
+            "江湖": (self.POINT_TASK_TAB_JIANGHU, self.ICON_TASK_JH),
+            "奇遇": (self.POINT_TASK_TAB_QIYU, self.ICON_TASK_QY),
+        }
+        if panel not in panel_targets:
+            raise ValueError(f"Unsupported task panel: {panel}")
+
+        if not self.wait_image_appear(self.ICON_TASK_ACTIVE, timeout_ms=timeout_ms, threshold=threshold):
+            self._log("任务侧栏未激活，点击任务栏")
+            self.click_point(self.POINT_MAIN_TASK[0], self.POINT_MAIN_TASK[1])
+            self.wait(wait_after_click_ms)
+
+            if not self.wait_image_appear(self.ICON_TASK_ACTIVE, timeout_ms=timeout_ms, threshold=threshold):
+                raise RuntimeError("未能打开任务侧栏")
+
+        tab_point, active_template = panel_targets[panel]
+        self.click_point(tab_point[0], tab_point[1])
+        self.wait(wait_after_click_ms)
+
+        if not self.wait_image_appear(active_template, timeout_ms=timeout_ms, threshold=threshold):
+            raise RuntimeError(f"未能切换到任务面板：{panel}")
+
+        self._log(f"已切换到任务面板：{panel}")
+
+    def wait_auto_pathfinding(
+        self,
+        *,
+        timeout_ms: int | None = None,
+        threshold: float = 0.8,
+        missing_threshold: int = 3,
+    ) -> None:
+        """Wait until the auto-pathfinding indicator disappears."""
+        self.wait_image_missing(
+            self.TEXT_AUTO_PATH,
+            timeout_ms=timeout_ms,
+            threshold=threshold,
+            missing_threshold=missing_threshold,
+            callback=lambda found, count: self._log("自动寻路中..."),
+        )
+
+    def require_image(
+        self,
+        template: str | list[str],
+        *,
+        timeout_ms: int | None,
+        description: str,
+        threshold: float = 0.8,
+    ) -> None:
+        """Wait for an image and fail the step if it is not found."""
+        if not self.wait_image_appear(template, timeout_ms=timeout_ms, threshold=threshold):
+            raise RuntimeError(f"未找到{description}")
+
+    def ensure_bangpai_activity_tab(self, max_attempts: int = 3) -> None:
+        """Switch to the activity Bangpai tab and verify it is active."""
+        for attempt in range(1, max_attempts + 1):
+            self.click_point(self.POINT_HUODONG_BANGPAI[0], self.POINT_HUODONG_BANGPAI[1])
+            self.wait(1500)
+            if self.wait_image_appear(self.TAB_BANGPAI_ACTIVE, timeout_ms=1500, threshold=0.85):
+                self._log("已打开活动 - 帮派界面")
+                return
+            self._log(f"活动 - 帮派界面未确认，重试 {attempt}/{max_attempts}")
+
+        raise RuntimeError("未能切换到活动 - 帮派界面")
+
+    def wait_find_image_in_roi(
+        self,
+        template: str | list[str],
+        roi: tuple[int, int, int, int],
+        *,
+        timeout_ms: int | None,
+        description: str,
+        threshold: float = 0.8,
+        interval_ms: int = 500,
+    ) -> bool:
+        """Wait for an image inside a design-resolution ROI."""
+        deadline = None if timeout_ms is None else time.perf_counter() + timeout_ms / 1000.0
+        scaled_roi = self.scale_roi(roi)
+
+        while deadline is None or time.perf_counter() < deadline:
+            if self.find_image(template, threshold=threshold, roi=scaled_roi):
+                return True
+            self.wait(interval_ms)
+
+        self._log(f"未找到{description}")
+        return False
+
+    def scale_roi(self, roi: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """Scale a design-resolution ROI to the current screenshot resolution."""
+        screen_width, screen_height = self._screen_resolution or self.design_resolution
+        design_width, design_height = self.design_resolution
+        x, y, width, height = roi
+        return (
+            int(round(x * screen_width / design_width)),
+            int(round(y * screen_height / design_height)),
+            int(round(width * screen_width / design_width)),
+            int(round(height * screen_height / design_height)),
+        )

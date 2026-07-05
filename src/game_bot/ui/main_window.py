@@ -6,7 +6,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -44,7 +43,7 @@ class RunnerWorker(QObject):
     def run(self) -> None:
         try:
             adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
-            vision = VisionEngine(enable_ocr=self.task.ocr_enabled, ocr_lang=self.task.ocr_lang)
+            vision = VisionEngine()
             logger = RunLogger()
             self.runner = DSLTaskRunner(
                 task=self.task,
@@ -100,13 +99,6 @@ class MainWindow(QMainWindow):
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_serial)
 
-        self.ocr_enabled = QCheckBox("Enable OCR")
-        self.ocr_enabled.setChecked(True)
-        self.ocr_lang = QComboBox()
-        self.ocr_lang.addItems(["中文 (ch)", "English (en)"])
-        self.ocr_lang.setCurrentIndex(0)  # 默认中文
-        self.ocr_lang.setToolTip("Select OCR language")
-
         row = 0
         grid.addWidget(self.task_type_label, row, 0, 1, 4)
         row += 1
@@ -132,11 +124,6 @@ class MainWindow(QMainWindow):
         grid.addWidget(serial_row, row, 1, 1, 3)
         row += 1
 
-        grid.addWidget(self.ocr_enabled, row, 0)
-        grid.addWidget(QLabel("OCR Lang"), row, 1)
-        grid.addWidget(self.ocr_lang, row, 2)
-
-        row += 1
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
@@ -270,9 +257,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Busy", "Task is already running.")
             return
 
-        # Apply GUI settings to task
-        self._apply_gui_settings_to_task()
-
         # Get ADB configuration from GUI
         adb_path = self.adb_path_edit.text().strip() or "adb"
         serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
@@ -326,17 +310,6 @@ class MainWindow(QMainWindow):
 
         self._env_adb_path = os.getenv("DEFAULT_ADB_PATH")
         self._env_serial = os.getenv("DEFAULT_ADB_SERIAL")
-
-    def _apply_gui_settings_to_task(self) -> None:
-        """Apply GUI settings (ADB, OCR) to the current task."""
-        ocr_lang_map = {"中文 (ch)": "ch", "English (en)": "en"}
-        ocr_lang_text = self.ocr_lang.currentText()
-        ocr_lang = ocr_lang_map.get(ocr_lang_text, "ch")
-
-        self.task.ocr_enabled = self.ocr_enabled.isChecked()
-        self.task.ocr_lang = ocr_lang
-
-        self._append_log(f"OCR Lang: {ocr_lang}, Enabled: {self.ocr_enabled.isChecked()}")
 
     def _append_log(self, text: str) -> None:
         self.log_view.append(text)

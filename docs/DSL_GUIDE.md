@@ -54,8 +54,6 @@ class MyTask(GameTask):
     design_resolution = (1280, 720)      # 设计分辨率
     device_serial = "127.0.0.1:16384"    # 设备串口
     adb_path = "adb"                     # ADB 路径
-    ocr_enabled = True                   # 是否启用 OCR
-    ocr_lang = "ch"                      # OCR 语言
     loop_count = 1                       # 循环次数
 ```
 

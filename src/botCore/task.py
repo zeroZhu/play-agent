@@ -75,8 +75,6 @@ class GameTask:
 
     design_resolution: tuple[int, int] = (1280, 720)
     loop_count: int = 1
-    ocr_enabled: bool = False
-    ocr_lang: str = "ch"
 
     _adb: ADBClient
     _vision: VisionEngine
@@ -93,6 +91,7 @@ class GameTask:
         self._last_match_center: tuple[int, int] | None = None
         self._last_match_score: float = 0.0
         self._default_interval_ms = default_interval_ms
+        self._logger: RunLogger | None = None
         self._event_callback: Callable[[str], None] | None = None
         self._jump_target: str | None = None
         self._current_step_index = 0
@@ -149,6 +148,9 @@ class GameTask:
 
     def is_stopped(self) -> bool:
         return self._stop_requested
+
+    def before_step(self, step_name: str, step_meta: dict[str, Any]) -> None:
+        """Hook called immediately before each DSL step attempt."""
 
     def jump_to(self, step_name: str) -> None:
         raise StepJumpException(step_name)

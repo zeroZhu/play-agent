@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from botCore import ADBClient, VisionEngine, RunLogger, ExecutionResult, GameTask
 from botCore.execution import DslStepExecutor, resolve_step_jump
@@ -28,12 +28,14 @@ class TaskQueueRunner:
         *,
         logger: RunLogger | None = None,
         event_callback: Callable[[str], None] | None = None,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
     ):
         self.task_list = task_list
         self.adb = adb_client
         self.vision = vision
         self.logger = logger
         self.event_callback = event_callback
+        self.progress_callback = progress_callback
         self._stop_requested = False
         self._paused = False
 
@@ -41,6 +43,7 @@ class TaskQueueRunner:
         self.current_task_index = 0
         self.current_step_index = 0
         self.total_tasks = len(task_list)
+        self._started_task_index: int | None = None
         self._executor = DslStepExecutor(
             should_stop=lambda: self._stop_requested or self._paused,
             emit=self._emit,
@@ -51,6 +54,7 @@ class TaskQueueRunner:
         self._stop_requested = True
         for task in self.task_list:
             task.stop()
+        self._emit_progress()
 
     def pause(self) -> None:
         """暂停任务队列（保持当前进度）。"""
@@ -58,6 +62,7 @@ class TaskQueueRunner:
         # 只设置当前正在执行的任务为停止状态（如果有的话）
         if 0 <= self.current_task_index < len(self.task_list):
             self.task_list[self.current_task_index].stop()
+        self._emit_progress()
 
     def resume(self) -> None:
         """继续执行任务队列。"""
@@ -70,6 +75,44 @@ class TaskQueueRunner:
         """检查是否暂停。"""
         return self._paused
 
+    def get_progress(self) -> dict[str, int]:
+        """Return a serializable snapshot of the current queue position."""
+        return {
+            "current_task_index": self.current_task_index,
+            "current_step_index": self.current_step_index,
+        }
+
+    def load_progress(self, progress: dict[str, Any] | None) -> None:
+        """Restore queue position from a saved progress dictionary."""
+        if not progress:
+            self.current_task_index = 0
+            self.current_step_index = 0
+            self._started_task_index = None
+            self._emit_progress()
+            return
+
+        try:
+            task_index = int(progress.get("current_task_index", 0))
+            step_index = int(progress.get("current_step_index", 0))
+        except (TypeError, ValueError):
+            task_index = 0
+            step_index = 0
+
+        task_index = max(0, min(task_index, self.total_tasks))
+        if task_index >= self.total_tasks:
+            step_index = 0
+        else:
+            step_count = len(self.task_list[task_index].get_steps())
+            if step_count <= 0:
+                step_index = 0
+            else:
+                step_index = max(0, min(step_index, step_count - 1))
+
+        self.current_task_index = task_index
+        self.current_step_index = step_index
+        self._started_task_index = None
+        self._emit_progress()
+
     def run(self) -> list[ExecutionResult]:
         """执行任务队列中的所有任务。
 
@@ -78,6 +121,7 @@ class TaskQueueRunner:
         """
         self._stop_requested = False
         self._paused = False
+        self._emit_progress()
         self.adb.ensure_device()
 
         screen_size = self.adb.get_screen_size()
@@ -105,6 +149,8 @@ class TaskQueueRunner:
                 if self._stop_requested:
                     break
                 time.sleep(0.1)
+            if self._stop_requested:
+                break
 
             task = self.task_list[self.current_task_index]
             task_name = getattr(task, "task_name", task.__class__.__name__)
@@ -116,11 +162,19 @@ class TaskQueueRunner:
             task.setup(self.adb, self.vision, self.logger, self.event_callback)
 
             # 执行单个任务
-            task_results = self._run_single_task(task)
+            task_results, task_completed = self._run_single_task(task)
             all_results.extend(task_results)
+
+            if self._stop_requested:
+                break
+            if self._paused or not task_completed:
+                continue
 
             # 任务完成后，更新索引
             self.current_task_index += 1
+            self.current_step_index = 0
+            self._started_task_index = None
+            self._emit_progress()
 
         # 所有任务完成后
         if self._stop_requested:
@@ -130,7 +184,7 @@ class TaskQueueRunner:
 
         return all_results
 
-    def _run_single_task(self, task: GameTask) -> list[ExecutionResult]:
+    def _run_single_task(self, task: GameTask) -> tuple[list[ExecutionResult], bool]:
         """执行单个任务。
 
         Args:
@@ -144,13 +198,17 @@ class TaskQueueRunner:
         loop_count = max(1, task.loop_count)
         task_name = getattr(task, "task_name", task.__class__.__name__)
 
-        # 调用 on_start（只在第一次 loop 调用）
-        if hasattr(task, "on_start") and self.current_step_index == 0:
-            task.on_start()
+        # 调用任务启动钩子（只在第一次 loop 调用）
+        if self._started_task_index != self.current_task_index:
+            if hasattr(task, "before_start"):
+                task.before_start()
+            if hasattr(task, "on_start"):
+                task.on_start()
+        self._started_task_index = self.current_task_index
 
         for round_idx in range(loop_count):
             if self._stop_requested or self._paused:
-                break
+                return results, False
 
             self._emit(f"  Loop {round_idx + 1}/{loop_count}")
 
@@ -160,16 +218,26 @@ class TaskQueueRunner:
                 if self._stop_requested or self._paused:
                     # 保存当前步骤索引
                     self.current_step_index = step_index
-                    break
+                    self._emit_progress()
+                    return results, False
 
                 step_name, step_func, step_meta = steps[step_index]
                 task._current_step_index = step_index
+                self.current_step_index = step_index
+                self._emit_progress()
 
                 if not step_meta.get("enabled", True):
                     step_index += 1
+                    self.current_step_index = step_index
                     continue
 
                 result = self._execute_step(step_name, step_func, step_meta)
+
+                if self._paused or self._stop_requested:
+                    self.current_step_index = step_index
+                    self._emit_progress()
+                    return results, False
+
                 results.append(result)
 
                 if self.logger:
@@ -191,9 +259,11 @@ class TaskQueueRunner:
                     if jump.end_loop:
                         break
                     step_index = jump.next_index
+                    self.current_step_index = step_index
                     continue
 
                 step_index += 1
+                self.current_step_index = step_index
 
                 # 应用间隔
                 interval_ms = step_meta.get("interval_ms") or task._default_interval_ms
@@ -205,10 +275,10 @@ class TaskQueueRunner:
                 self.current_step_index = 0
 
         # 调用 on_finish
-        if hasattr(task, "on_finish") and not self._paused:
+        if hasattr(task, "on_finish") and not self._paused and not self._stop_requested:
             task.on_finish(results)
 
-        return results
+        return results, not self._paused and not self._stop_requested
 
     def _execute_step(
         self,
@@ -228,3 +298,8 @@ class TaskQueueRunner:
         """发送事件消息。"""
         if self.event_callback:
             self.event_callback(message)
+
+    def _emit_progress(self) -> None:
+        """Send the current progress snapshot to the UI/state layer."""
+        if self.progress_callback:
+            self.progress_callback(self.get_progress())

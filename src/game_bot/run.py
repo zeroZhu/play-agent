@@ -23,7 +23,6 @@ def main() -> int:
     parser.add_argument("--task", "-t", required=True, help="Python task file (.py)")
     parser.add_argument("--adb", default="adb", help="ADB path")
     parser.add_argument("--serial", "-s", help="Device serial (overrides task config)")
-    parser.add_argument("--no-ocr", action="store_true", help="Disable OCR")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
     args = parser.parse_args()
 
@@ -46,12 +45,9 @@ def main() -> int:
 
     print(f"Executing Python DSL task: {task.__name__}")
 
-    if args.no_ocr:
-        task.ocr_enabled = False
-
     task_instance = task()
     adb = ADBClient(adb_path=args.adb, serial=args.serial)
-    vision = VisionEngine(enable_ocr=task.ocr_enabled, ocr_lang=task.ocr_lang)
+    vision = VisionEngine()
     logger = RunLogger()
     runner = DSLTaskRunner(
         task_instance,

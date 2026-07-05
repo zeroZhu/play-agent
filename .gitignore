@@ -3,9 +3,13 @@
 __pycache__/
 .pytest_cache/
 .pytest_tmp/
+build/
+dist/
 *.pyc
 logs/
+src/ymjh_bot/.task_queue_state.json
 uv.lock.bak
+ymjh_bot.spec
 pytest-cache-files-*
 *.egg-info/
 .claude/

@@ -23,7 +23,13 @@ def load_task_class(path: str | Path) -> type[GameTask]:
     spec.loader.exec_module(module)
 
     for attr in module.__dict__.values():
-        if isinstance(attr, type) and issubclass(attr, GameTask) and attr is not GameTask:
+        if (
+            isinstance(attr, type)
+            and issubclass(attr, GameTask)
+            and attr is not GameTask
+            and attr.__module__ == module.__name__
+            and not attr.__dict__.get("__abstract_task__", False)
+        ):
             return attr
 
     raise ValueError(f"No GameTask subclass found in {p}")

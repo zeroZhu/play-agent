@@ -54,6 +54,7 @@ class DslStepExecutor:
                 break
 
             try:
+                task.before_step(name, meta)
                 result_value = func(task)
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 if result_value is None:

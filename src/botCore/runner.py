@@ -58,6 +58,9 @@ class DSLTaskRunner:
         self.task._screen_resolution = screen_size
         self.task.setup(self.adb, self.vision, self.logger, self.event_callback)
 
+        if hasattr(self.task, "before_start"):
+            self.task.before_start()
+
         if hasattr(self.task, "on_start"):
             self.task.on_start()
 

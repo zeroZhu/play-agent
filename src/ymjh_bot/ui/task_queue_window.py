@@ -8,9 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
-    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,11 +26,26 @@ from PySide6.QtWidgets import (
 
 from botCore import ADBClient, ADBError, GameTask, RunLogger, VisionEngine, load_task_class
 from ymjh_bot.runner.task_queue_runner import TaskQueueRunner
+from ymjh_bot.ui.task_queue_state import (
+    clear_progress,
+    load_state,
+    restore_selected_tasks,
+    save_state,
+    task_keys_from_infos,
+)
+
+
+def is_visible_task_class(task_class: type[GameTask]) -> bool:
+    """Return whether a loaded task class should appear in the queue UI."""
+    return bool(getattr(task_class, "task_visible", True)) and not bool(
+        task_class.__dict__.get("__abstract_task__", False)
+    )
 
 
 class QueueRunnerWorker(QObject):
     """Worker for running task queue in background thread."""
     progress = Signal(str)
+    progress_state = Signal(dict)
     finished = Signal()
     error = Signal(str)
 
@@ -41,22 +54,20 @@ class QueueRunnerWorker(QObject):
         task_instances: list[GameTask],
         adb_path: str,
         serial: str | None,
-        ocr_enabled: bool,
-        ocr_lang: str,
+        initial_progress: dict | None = None,
     ):
         super().__init__()
         self.task_instances = task_instances
         self.adb_path = adb_path
         self.serial = serial
-        self.ocr_enabled = ocr_enabled
-        self.ocr_lang = ocr_lang
+        self.initial_progress = initial_progress
         self.runner: TaskQueueRunner | None = None
 
     @Slot()
     def run(self) -> None:
         try:
             adb = ADBClient(adb_path=self.adb_path, serial=self.serial)
-            vision = VisionEngine(enable_ocr=self.ocr_enabled, ocr_lang=self.ocr_lang)
+            vision = VisionEngine()
             logger = RunLogger()
             self.runner = TaskQueueRunner(
                 task_list=self.task_instances,
@@ -64,7 +75,10 @@ class QueueRunnerWorker(QObject):
                 vision=vision,
                 logger=logger,
                 event_callback=self.progress.emit,
+                progress_callback=self.progress_state.emit,
             )
+            if self.initial_progress:
+                self.runner.load_progress(self.initial_progress)
             self.runner.run()
             self.finished.emit()
         except Exception as exc:
@@ -80,11 +94,20 @@ class TaskQueueWindow(QMainWindow):
         self.resize(1000, 700)
 
         self._load_env_config()
+        self.state_path = Path(__file__).resolve().parent.parent / ".task_queue_state.json"
+        state_exists = self.state_path.exists()
+        self._state = load_state(self.state_path)
+        if not state_exists:
+            self._state["adb_path"] = self._env_adb_path or "adb"
+            self._state["serial"] = self._env_serial or ""
 
         self.worker: QueueRunnerWorker | None = None
         self.thread: QThread | None = None
         self.available_tasks: list[dict] = []  # [{"key": str, "name": str, "class": type, "file": str}]
         self.selected_tasks: list[dict] = []  # Same structure as available_tasks
+        self._pending_logs: list[str] = []
+        self._suppress_queue_save = False
+        self._stop_requested_by_user = False
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -94,31 +117,26 @@ class TaskQueueWindow(QMainWindow):
         layout.addWidget(self._build_transfer_panel(), 1)
         layout.addWidget(self._build_control_panel())
         layout.addWidget(self._build_log_panel(), 1)
+        self._flush_pending_logs()
 
-        self._scan_available_tasks()
+        self._scan_available_tasks(restore_saved=True)
 
     def _build_config_panel(self) -> QWidget:
         """Build ADB configuration panel."""
         box = QGroupBox("ADB Configuration")
         grid = QGridLayout(box)
 
-        self.adb_path_edit = QLineEdit(self._env_adb_path or "adb")
+        self.adb_path_edit = QLineEdit(str(self._state.get("adb_path") or self._env_adb_path or "adb"))
         self.device_combo = QComboBox()
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self.refresh_devices)
 
         self.serial_input = QLineEdit()
         self.serial_input.setPlaceholderText("e.g., 127.0.0.1:5555")
-        if self._env_serial:
-            self.serial_input.setText(self._env_serial)
+        if self._state.get("serial"):
+            self.serial_input.setText(str(self._state["serial"]))
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_serial)
-
-        self.ocr_enabled = QCheckBox("Enable OCR")
-        self.ocr_enabled.setChecked(True)
-        self.ocr_lang = QComboBox()
-        self.ocr_lang.addItems(["中文 (ch)", "English (en)"])
-        self.ocr_lang.setCurrentIndex(0)
 
         row = 0
         grid.addWidget(QLabel("ADB Path"), row, 0)
@@ -141,11 +159,10 @@ class TaskQueueWindow(QMainWindow):
         grid.addWidget(serial_row, row, 1, 1, 3)
         row += 1
 
-        grid.addWidget(self.ocr_enabled, row, 0)
-        grid.addWidget(QLabel("OCR Lang"), row, 1)
-        grid.addWidget(self.ocr_lang, row, 2)
-
         self.refresh_devices()
+        self.adb_path_edit.editingFinished.connect(self._save_state_from_ui)
+        self.device_combo.currentTextChanged.connect(lambda _: self._save_state_from_ui())
+        self.serial_input.editingFinished.connect(self._save_state_from_ui)
         return box
 
     def _build_transfer_panel(self) -> QWidget:
@@ -159,6 +176,9 @@ class TaskQueueWindow(QMainWindow):
         self.available_list = QListWidget()
         self.available_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         left_layout.addWidget(self.available_list)
+        self.refresh_tasks_btn = QPushButton("Refresh Tasks")
+        self.refresh_tasks_btn.clicked.connect(self.refresh_tasks)
+        left_layout.addWidget(self.refresh_tasks_btn)
 
         # Middle: Buttons
         btn_layout = QVBoxLayout()
@@ -179,6 +199,7 @@ class TaskQueueWindow(QMainWindow):
         self.selected_list = QListWidget()
         self.selected_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.selected_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.selected_list.model().rowsMoved.connect(self._on_queue_reordered)
         right_layout.addWidget(self.selected_list)
 
         layout.addWidget(right_group)
@@ -209,6 +230,10 @@ class TaskQueueWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         layout.addWidget(self.stop_btn)
 
+        self.reset_progress_btn = QPushButton("Reset Progress")
+        self.reset_progress_btn.clicked.connect(self.reset_progress)
+        layout.addWidget(self.reset_progress_btn)
+
         layout.addStretch()
         return box
 
@@ -228,7 +253,7 @@ class TaskQueueWindow(QMainWindow):
         layout.addLayout(btn_layout)
         return box
 
-    def _scan_available_tasks(self) -> None:
+    def _scan_available_tasks(self, restore_saved: bool = False) -> None:
         """Scan task directory for available Python DSL tasks."""
         task_dir = Path(__file__).parent.parent / "task"
         if not task_dir.exists():
@@ -236,12 +261,12 @@ class TaskQueueWindow(QMainWindow):
             return
 
         self.available_tasks = []
-        for file_path in task_dir.glob("*.py"):
+        for file_path in sorted(task_dir.glob("*.py")):
             if file_path.name.startswith("_"):
                 continue
             try:
                 task_class = self._load_task_class_from_file(file_path)
-                if task_class:
+                if task_class and is_visible_task_class(task_class):
                     self.available_tasks.append({
                         "key": getattr(task_class, "task_key", task_class.__name__),
                         "name": getattr(task_class, "task_name", task_class.__name__),
@@ -253,6 +278,8 @@ class TaskQueueWindow(QMainWindow):
                 self._append_log(f"[WARN] Failed to load {file_path.name}: {e}")
 
         self._update_available_list()
+        if restore_saved:
+            self._restore_selected_tasks_from_state()
 
     def _load_task_class_from_file(self, file_path: Path) -> type[GameTask] | None:
         """Load GameTask subclass from a Python file."""
@@ -269,12 +296,14 @@ class TaskQueueWindow(QMainWindow):
 
     def _update_selected_list(self) -> None:
         """Update the selected tasks list widget."""
+        self._suppress_queue_save = True
         self.selected_list.clear()
         for task_info in self.selected_tasks:
             item = QListWidgetItem(f"{task_info['name']} ({task_info['key']})")
             item.setToolTip(task_info.get("description", ""))
             item.setData(Qt.ItemDataRole.UserRole, task_info)
             self.selected_list.addItem(item)
+        self._suppress_queue_save = False
 
     def _sync_selected_tasks_from_widget(self) -> None:
         """Persist the current visual order after drag-and-drop reordering."""
@@ -298,6 +327,7 @@ class TaskQueueWindow(QMainWindow):
                 self.selected_tasks.append(task_info)
 
         self._update_selected_list()
+        self._save_state_from_ui()
 
     def remove_selected_tasks(self) -> None:
         """Remove selected tasks from queue."""
@@ -312,6 +342,7 @@ class TaskQueueWindow(QMainWindow):
                 self.selected_tasks.pop(row)
 
         self._update_selected_list()
+        self._save_state_from_ui()
 
     def _get_selected_task_instances(self) -> list[GameTask]:
         """Create task instances from selected tasks."""
@@ -337,19 +368,21 @@ class TaskQueueWindow(QMainWindow):
 
         adb_path = self.adb_path_edit.text().strip() or "adb"
         serial = self.device_combo.currentText().strip() or self.serial_input.text().strip() or None
-        ocr_lang = self._current_ocr_lang()
+        self._save_state_from_ui()
+        initial_progress = self._state.get("progress")
+        self._stop_requested_by_user = False
 
         self.thread = QThread(self)
         self.worker = QueueRunnerWorker(
             task_instances,
             adb_path,
             serial,
-            self.ocr_enabled.isChecked(),
-            ocr_lang,
+            initial_progress if isinstance(initial_progress, dict) else None,
         )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._append_log)
+        self.worker.progress_state.connect(self._on_progress_state)
         self.worker.error.connect(self._on_run_error)
         self.worker.finished.connect(self._on_run_finished)
         self.worker.finished.connect(self.thread.quit)
@@ -359,16 +392,22 @@ class TaskQueueWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self._append_log(f"Task queue started. OCR={self.ocr_enabled.isChecked()}, lang={ocr_lang}")
+        self._set_queue_editing_enabled(False)
+        self._append_log("Task queue started.")
+        if initial_progress:
+            self._append_log(f"Resume progress: task={initial_progress.get('current_task_index', 0)}, step={initial_progress.get('current_step_index', 0)}")
 
     def pause_queue(self) -> None:
         """Pause the task queue."""
         if self.worker and self.worker.runner:
             self.worker.runner.pause()
+            self._save_progress(self.worker.runner.get_progress())
             self._append_log("Pause requested.")
             self.pause_btn.setEnabled(False)
             self.resume_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
         else:
             self._append_log("[WARN] No active runner to pause")
 
@@ -379,26 +418,41 @@ class TaskQueueWindow(QMainWindow):
             self._append_log("Resumed.")
             self.resume_btn.setEnabled(False)
             self.pause_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
         else:
             self._append_log("[WARN] No active runner to resume")
 
     def stop_queue(self) -> None:
         """Stop the task queue."""
+        self._stop_requested_by_user = True
+        self._clear_saved_progress()
         if self.worker and self.worker.runner:
             self.worker.runner.stop()
             self._append_log("Stop requested.")
             self.stop_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(False)
         else:
             self._append_log("[WARN] No active runner to stop")
 
     def _on_run_finished(self) -> None:
         """Called when queue execution finishes."""
-        self._append_log("Task queue finished.")
+        if self._stop_requested_by_user:
+            self._append_log("Task queue stopped.")
+        else:
+            self._clear_saved_progress()
+            self._append_log("Task queue finished.")
+        self._stop_requested_by_user = False
         self._reset_buttons()
 
     def _on_run_error(self, message: str) -> None:
         """Called when queue execution errors."""
         self._append_log(f"[ERROR] {message}")
+        if self._stop_requested_by_user:
+            self._clear_saved_progress()
+        elif self.worker and self.worker.runner:
+            self._save_progress(self.worker.runner.get_progress())
+        self._stop_requested_by_user = False
         self._reset_buttons()
 
     def _reset_buttons(self) -> None:
@@ -407,10 +461,12 @@ class TaskQueueWindow(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+        self._set_queue_editing_enabled(True)
 
     def _cleanup_worker(self) -> None:
         """Clean up worker reference after thread finishes."""
         self.worker = None
+        self.thread = None
 
     def _load_env_config(self) -> None:
         """Load default ADB configuration from .env file."""
@@ -425,16 +481,35 @@ class TaskQueueWindow(QMainWindow):
 
     def _append_log(self, text: str) -> None:
         """Append text to log view."""
-        self.log_view.append(text)
+        if hasattr(self, "log_view"):
+            self.log_view.append(text)
+        else:
+            self._pending_logs.append(text)
 
-    def _current_ocr_lang(self) -> str:
-        """Return OCR language code from the UI selection."""
-        lang_map = {"中文 (ch)": "ch", "English (en)": "en"}
-        return lang_map.get(self.ocr_lang.currentText(), "ch")
+    def _flush_pending_logs(self) -> None:
+        """Flush logs captured before the log widget existed."""
+        for text in self._pending_logs:
+            self.log_view.append(text)
+        self._pending_logs.clear()
 
     def clear_log(self) -> None:
         """Clear all log messages."""
         self.log_view.clear()
+
+    def refresh_tasks(self) -> None:
+        """Manually rescan built-in task scripts."""
+        self._sync_selected_tasks_from_widget()
+        self._save_state_from_ui()
+        self._scan_available_tasks(restore_saved=True)
+        self._append_log("Tasks refreshed.")
+
+    def reset_progress(self) -> None:
+        """Clear saved task progress without changing the queue order."""
+        if self.worker and self.worker.runner:
+            QMessageBox.warning(self, "Queue Running", "Stop the queue before resetting progress.")
+            return
+        self._clear_saved_progress()
+        self._append_log("Progress reset.")
 
     def refresh_devices(self) -> None:
         """Refresh connected ADB devices."""
@@ -451,6 +526,11 @@ class TaskQueueWindow(QMainWindow):
             return
         for item in devices:
             self.device_combo.addItem(item.serial)
+        serial = str(self._state.get("serial") or self.serial_input.text().strip())
+        if serial:
+            idx = self.device_combo.findText(serial)
+            if idx >= 0:
+                self.device_combo.setCurrentIndex(idx)
 
     def connect_serial(self) -> None:
         """Connect to a custom ADB serial port."""
@@ -467,10 +547,70 @@ class TaskQueueWindow(QMainWindow):
             idx = self.device_combo.findText(serial)
             if idx >= 0:
                 self.device_combo.setCurrentIndex(idx)
+            self._save_state_from_ui()
             QMessageBox.information(self, "Connect", f"Successfully connected to {serial}")
         except ADBError as exc:
             QMessageBox.critical(self, "Connect Failed", str(exc))
             self._append_log(f"[ERROR] Connect failed: {exc}")
+
+    @Slot(dict)
+    def _on_progress_state(self, progress: dict) -> None:
+        """Persist progress snapshots emitted by the running queue."""
+        if self._stop_requested_by_user:
+            return
+        self._save_progress(progress)
+
+    def _save_progress(self, progress: dict) -> None:
+        """Save current queue progress."""
+        self._state["progress"] = {
+            "current_task_index": int(progress.get("current_task_index", 0)),
+            "current_step_index": int(progress.get("current_step_index", 0)),
+        }
+        self._save_state_from_ui()
+
+    def _clear_saved_progress(self) -> None:
+        """Clear persisted progress while preserving settings and queue order."""
+        self._state = clear_progress(self._state)
+        self._save_state_from_ui()
+
+    def _restore_selected_tasks_from_state(self) -> None:
+        """Restore selected tasks according to persisted keys."""
+        selected, missing = restore_selected_tasks(
+            self.available_tasks,
+            self._state.get("selected_task_keys", []),
+        )
+        self.selected_tasks = selected
+        self._update_selected_list()
+        for key in missing:
+            self._append_log(f"[WARN] Saved task not found, skipped: {key}")
+        if missing:
+            self._save_state_from_ui()
+
+    def _save_state_from_ui(self) -> None:
+        """Persist current UI settings and selected task order."""
+        if not hasattr(self, "adb_path_edit"):
+            return
+        self._sync_selected_tasks_from_widget()
+        self._state["adb_path"] = self.adb_path_edit.text().strip() or "adb"
+        self._state["serial"] = self.device_combo.currentText().strip() or self.serial_input.text().strip()
+        self._state["selected_task_keys"] = task_keys_from_infos(self.selected_tasks)
+        save_state(self.state_path, self._state)
+
+    def _on_queue_reordered(self, *args) -> None:
+        """Persist queue order after drag-and-drop."""
+        if self._suppress_queue_save:
+            return
+        self._sync_selected_tasks_from_widget()
+        self._save_state_from_ui()
+
+    def _set_queue_editing_enabled(self, enabled: bool) -> None:
+        """Enable or disable controls that mutate the selected queue."""
+        self.available_list.setEnabled(enabled)
+        self.selected_list.setEnabled(enabled)
+        self.add_btn.setEnabled(enabled)
+        self.remove_btn.setEnabled(enabled)
+        self.refresh_tasks_btn.setEnabled(enabled)
+        self.reset_progress_btn.setEnabled(enabled)
 
 
 def main():
