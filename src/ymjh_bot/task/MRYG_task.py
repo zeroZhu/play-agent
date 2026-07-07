@@ -10,7 +10,7 @@ from ymjh_bot.ym_game_task import YmGameTask
 class MRYGTask(YmGameTask):
     """每日一卦。"""
 
-    task_key = "mryg"
+    task_key = "MRYG"
     task_name = "每日一卦"
     task_description = "每日一卦任务"
 

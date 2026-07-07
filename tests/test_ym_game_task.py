@@ -2,8 +2,8 @@ from pathlib import Path
 import time
 
 from botCore.vision import load_image
-from ymjh_bot.task.start import StartTask
-from ymjh_bot.task.bangpai import BangpaiTask
+from ymjh_bot.task.QDYX_task import StartTask
+from ymjh_bot.task.BPRW_task import BangpaiTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 from ymjh_bot.ym_game_task import LoginState, YmGameTask
 
@@ -27,6 +27,7 @@ class ScriptedLoginTask(YmGameTask):
         process_output: str = "",
         window_output: str = GAME_WINDOW,
         window_error: bool = False,
+        power_saving_results: list[bool] | None = None,
     ):
         super().__init__()
         self.states = states or []
@@ -34,10 +35,13 @@ class ScriptedLoginTask(YmGameTask):
         self.process_output = process_output
         self.window_output = window_output
         self.window_error = window_error
+        self.power_saving_results = power_saving_results or []
         self.shell_calls: list[str] = []
         self.detect_calls: list[tuple[bool, float]] = []
         self.taps: list[str | None] = []
+        self.clicked_points: list[tuple[int, int, int]] = []
         self.waits: list[int | float] = []
+        self.refresh_calls = 0
         self.logs: list[str] = []
 
     def shell(self, command: str) -> str:
@@ -79,6 +83,16 @@ class ScriptedLoginTask(YmGameTask):
             self.LOGIN_STATE_POPUP,
         }:
             self._advance_state()
+
+    def is_power_saving_mode(self) -> bool:
+        return self.power_saving_results.pop(0) if self.power_saving_results else False
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def refresh_screen_resolution(self) -> None:
+        self.refresh_calls += 1
+        self._screen_resolution = self.design_resolution
 
     def wait(self, ms):
         self.waits.append(ms)
@@ -137,9 +151,14 @@ class FakeHealthRecoveryTask(YmGameTask):
         self.health_ratios = health_ratios
         self.emotion_found = emotion_found
         self.actions = []
-        self.roi_calls = []
+        self.image_calls = []
+        self.chat_collapse_calls = []
         self.wait_calls = []
         self.logs = []
+
+    def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
+        self.chat_collapse_calls.append(wait_after_click_ms)
+        return False
 
     def detect_health_ratio(self) -> float | None:
         if not self.health_ratios:
@@ -148,18 +167,12 @@ class FakeHealthRecoveryTask(YmGameTask):
             return self.health_ratios[0]
         return self.health_ratios.pop(0)
 
-    def wait_find_image_in_roi(
-        self,
-        template,
-        roi,
-        *,
-        timeout_ms,
-        description,
-        threshold=0.8,
-        interval_ms=500,
-    ):
-        self.roi_calls.append((template, roi, timeout_ms, description, threshold, interval_ms))
-        return self.emotion_found
+    def find_image(self, template, threshold=0.8, roi=None) -> bool:
+        self.image_calls.append((template, threshold, roi))
+        if template == self.BTN_BIAOQING:
+            self._last_match_center = (370, 692) if self.emotion_found else None
+            return self.emotion_found
+        return False
 
     def click(self, offset: int = 3) -> None:
         self.actions.append(("click", offset))
@@ -172,6 +185,114 @@ class FakeHealthRecoveryTask(YmGameTask):
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
+
+
+class FakeChatTask(YmGameTask):
+    def __init__(self, chat_open_results: list[bool] | None = None, image_results: list[bool] | None = None):
+        super().__init__()
+        self.chat_open_results = chat_open_results or []
+        self.image_results = image_results or []
+        self.clicked_points = []
+        self.wait_calls = []
+        self.image_calls = []
+        self.logs = []
+
+    def is_chat_open(self) -> bool:
+        return self.chat_open_results.pop(0) if self.chat_open_results else False
+
+    def wait_image_appear(self, template, timeout_ms=10000, threshold=0.8, callback=None, interval_ms=500):
+        self.image_calls.append((template, timeout_ms, threshold))
+        return self.image_results.pop(0) if self.image_results else False
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.clicked_points.append((x, y, offset))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class FakeAutoBattleTask(YmGameTask):
+    def __init__(self):
+        super().__init__()
+        self.actions = []
+        self.wait_calls = []
+        self.refresh_calls = 0
+        self.logs = []
+
+    def refresh_screen_resolution(self) -> None:
+        self.refresh_calls += 1
+        self._screen_resolution = self.design_resolution
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.actions.append(("point", x, y, offset))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 400) -> None:
+        self.actions.append(("swipe", x1, y1, x2, y2, duration_ms))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+class FakeMovementTask(YmGameTask):
+    def __init__(self, *, main_ready: bool = True, power_saving: bool = False):
+        super().__init__()
+        self.main_ready = main_ready
+        self.power_saving = power_saving
+        self.actions = []
+        self.wait_calls = []
+        self.refresh_calls = 0
+        self.main_ready_calls = []
+        self.logs = []
+
+    def is_game_main_ready(self, *, timeout_ms: int = 2000, threshold: float = 0.8) -> bool:
+        self.main_ready_calls.append((timeout_ms, threshold))
+        return self.main_ready
+
+    def is_power_saving_mode(self) -> bool:
+        return self.power_saving
+
+    def click_point(self, x: int, y: int, offset: int = 3) -> None:
+        self.actions.append(("point", x, y, offset))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 400) -> None:
+        self.actions.append(("swipe", x1, y1, x2, y2, duration_ms))
+
+    def wait(self, ms):
+        self.wait_calls.append(ms)
+
+    def refresh_screen_resolution(self) -> None:
+        self.refresh_calls += 1
+        self._screen_resolution = self.design_resolution
+
+    def _log(self, message: str) -> None:
+        self.logs.append(message)
+
+
+def assert_value_error(message: str, callback) -> None:
+    try:
+        callback()
+    except ValueError as exc:
+        assert str(exc) == message
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def auto_battle_round_actions(task: YmGameTask, repeat_count: int) -> list[tuple]:
+    normal_attack = ("point", task.POINT_BATTLE_NORMAL_ATTACK[0], task.POINT_BATTLE_NORMAL_ATTACK[1], 0)
+    return [
+        *[normal_attack for _ in range(repeat_count)],
+        *[
+            ("point", x, y, 0)
+            for x, y in task.POINT_BATTLE_SKILL_BUTTONS
+            for _ in range(repeat_count)
+        ],
+    ]
 
 
 def test_ym_game_task_reports_process_running_from_pid():
@@ -249,19 +370,62 @@ def test_ym_game_task_skips_launch_when_game_is_foreground_and_clean():
 
     assert task.shell_calls == ["dumpsys window"]
     assert task.taps == []
+    assert task.clicked_points == []
     assert "检测到游戏已在前台，跳过启动" in task.logs
+
+
+def test_ym_game_task_wakes_power_saving_foreground_before_login_flow():
+    task = ScriptedLoginTask(
+        [None, YmGameTask.LOGIN_STATE_MAIN],
+        window_output=GAME_WINDOW,
+        power_saving_results=[True],
+    )
+
+    task.ensure_game_started()
+
+    assert task.shell_calls == ["dumpsys window"]
+    assert task.clicked_points == [
+        (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
+    ]
+    assert task.refresh_calls == 1
+    assert task.taps == []
+    assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
+    assert "检测到游戏已在前台，跳过启动" in task.logs
+    assert "进入游戏主界面" not in task.logs
+
+
+def test_ym_game_task_wakes_unrecognized_foreground_once_before_login_flow():
+    task = ScriptedLoginTask(
+        [None, YmGameTask.LOGIN_STATE_MAIN],
+        window_output=GAME_WINDOW,
+        power_saving_results=[False],
+    )
+
+    task.ensure_game_started()
+
+    assert task.shell_calls == ["dumpsys window"]
+    assert task.clicked_points == [
+        (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
+    ]
+    assert task.refresh_calls == 1
+    assert task.taps == []
+    assert "前台画面未识别，点击右下角摇杆中心尝试唤醒" in task.logs
+    assert "检测到游戏已在前台，跳过启动" in task.logs
+    assert "进入游戏主界面" not in task.logs
 
 
 def test_ym_game_task_cleans_foreground_popup_instead_of_skipping():
     task = ScriptedLoginTask(
         [YmGameTask.LOGIN_STATE_POPUP, YmGameTask.LOGIN_STATE_MAIN],
         window_output=GAME_WINDOW,
+        power_saving_results=[False],
     )
 
     task.ensure_game_started()
 
     assert task.shell_calls == ["dumpsys window"]
     assert task.taps == [YmGameTask.LOGIN_STATE_POPUP]
+    assert task.clicked_points == []
     assert "检测到游戏在前台但未进入主界面，继续进入游戏" in task.logs
 
 
@@ -319,11 +483,41 @@ def test_detect_health_ratio_reads_reference_screenshots():
 
     low_ratio = HealthScreenshotTask(load_image(root / "screenshots" / "1.png")).detect_health_ratio()
     full_ratio = HealthScreenshotTask(load_image(root / "screenshots" / "5.png")).detect_health_ratio()
+    chat_overlay_ratio = HealthScreenshotTask(
+        load_image(root / "screenshots" / "hslj_debug_current_1v1.png")
+    ).detect_health_ratio()
 
     assert low_ratio is not None
     assert low_ratio < YmGameTask.HEALTH_RECOVER_THRESHOLD
     assert full_ratio is not None
     assert full_ratio >= YmGameTask.HEALTH_FULL_THRESHOLD
+    assert chat_overlay_ratio is None
+
+
+def test_collapse_chat_if_open_clicks_chat_arrow():
+    task = FakeChatTask(chat_open_results=[True])
+
+    assert task.collapse_chat_if_open()
+
+    assert task.clicked_points == [
+        (task.POINT_CHAT_COLLAPSE_ARROW[0], task.POINT_CHAT_COLLAPSE_ARROW[1], 0)
+    ]
+    assert task.wait_calls == [800]
+    assert "检测到聊天框展开，点击箭头收起" in task.logs
+
+
+def test_close_all_panels_collapses_chat_before_and_after_closing():
+    task = FakeChatTask(chat_open_results=[True, False], image_results=[False])
+
+    task.close_all_panels()
+
+    assert task.clicked_points == [
+        (task.POINT_CHAT_COLLAPSE_ARROW[0], task.POINT_CHAT_COLLAPSE_ARROW[1], 0)
+    ]
+    assert task.wait_calls == [800]
+    assert task.image_calls == [
+        ([task.BTN_CLOSE, task.BTN_PANE_CLOSE, task.BTN_WELCOME_CLOSE], 5000, 0.8)
+    ]
 
 
 def test_recover_health_if_needed_meditates_until_full():
@@ -331,8 +525,9 @@ def test_recover_health_if_needed_meditates_until_full():
 
     task.recover_health_if_needed()
 
-    assert task.roi_calls == [
-        (task.BTN_BIAOQING, task.ROI_BIAOQING_BUTTON, 3000, "表情按钮", 0.9, 300)
+    assert task.chat_collapse_calls == [800]
+    assert task.image_calls == [
+        (task.BTN_BIAOQING, 0.9, task.ROI_BIAOQING_BUTTON)
     ]
     assert task.actions == [
         ("click", 0),
@@ -349,7 +544,10 @@ def test_recover_health_if_needed_skips_when_health_is_not_low():
 
     task.recover_health_if_needed()
 
-    assert task.roi_calls == []
+    assert task.chat_collapse_calls == [800]
+    assert task.image_calls == [
+        (task.BTN_BIAOQING, 0.9, task.ROI_BIAOQING_BUTTON)
+    ]
     assert task.actions == []
 
 
@@ -358,11 +556,115 @@ def test_recover_health_if_needed_skips_when_emotion_button_is_missing():
 
     task.recover_health_if_needed()
 
-    assert task.roi_calls == [
-        (task.BTN_BIAOQING, task.ROI_BIAOQING_BUTTON, 3000, "表情按钮", 0.9, 300)
+    assert task.chat_collapse_calls == [800]
+    assert task.image_calls == [
+        (task.BTN_BIAOQING, 0.9, task.ROI_BIAOQING_BUTTON)
     ]
+    assert task.health_ratios == [0.79]
     assert task.actions == []
     assert "未找到主界面表情按钮，跳过自动打坐" in task.logs
+
+
+def test_auto_battle_clicks_normal_attack_skills_and_turns_page_by_default():
+    task = FakeAutoBattleTask()
+
+    task.auto_battle()
+
+    page_actions = auto_battle_round_actions(task, repeat_count=3) * task.BATTLE_PAGE_ROUND_COUNT
+    page_turn = ("swipe", 1118, 389, 984, 486, 350)
+
+    assert task.refresh_calls == 1
+    assert task.actions == [
+        *page_actions,
+        page_turn,
+        *page_actions,
+        page_turn,
+    ]
+    assert task.wait_calls == [500] * 146
+    assert "自动战斗点击完成" in task.logs
+
+
+def test_auto_battle_can_run_one_skill_page_without_turning_page():
+    task = FakeAutoBattleTask()
+
+    task.auto_battle(skill_pages=1, repeat_count=1, interval_ms=250)
+
+    assert task.actions == auto_battle_round_actions(task, repeat_count=1) * task.BATTLE_PAGE_ROUND_COUNT
+    assert task.wait_calls == [250] * 24
+    assert task.refresh_calls == 1
+
+
+def test_turn_battle_skill_page_scales_swipe_to_current_resolution():
+    task = FakeAutoBattleTask()
+    task._screen_resolution = (1920, 1080)
+
+    task.turn_battle_skill_page(duration_ms=450)
+
+    assert task.actions == [("swipe", 1677, 584, 1476, 729, 450)]
+
+
+def test_walk_forward_drags_left_joystick_on_clean_main_scene():
+    task = FakeMovementTask(main_ready=True)
+
+    task.walk_forward(500)
+
+    assert task.actions == [("swipe", 105, 455, 105, 385, 500)]
+    assert task.main_ready_calls == [(2000, 0.8)]
+
+
+def test_walk_scales_joystick_drag_to_current_resolution():
+    task = FakeMovementTask(main_ready=True)
+    task._screen_resolution = (1920, 1080)
+
+    task.walk("向右", duration_ms=250)
+
+    assert task.actions == [("swipe", 158, 682, 262, 682, 250)]
+
+
+def test_walk_rejects_movement_when_main_scene_is_not_clean():
+    task = FakeMovementTask(main_ready=False)
+
+    try:
+        task.walk_left()
+    except RuntimeError as exc:
+        assert str(exc) == "当前不是干净主界面，禁止移动"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert task.actions == []
+
+
+def test_wake_from_power_saving_taps_right_joystick_center():
+    task = FakeMovementTask(power_saving=True)
+
+    assert task.wake_from_power_saving_if_needed()
+
+    assert task.actions == [
+        ("point", task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
+    ]
+    assert task.wait_calls == [1000]
+    assert task.refresh_calls == 1
+    assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
+
+
+def test_auto_battle_rejects_invalid_arguments():
+    task = FakeAutoBattleTask()
+
+    assert_value_error("skill_pages must be at least 1", lambda: task.auto_battle(skill_pages=0))
+    assert_value_error("repeat_count must be at least 1", lambda: task.auto_battle(repeat_count=0))
+    assert_value_error(
+        "interval_ms must be greater than or equal to 0",
+        lambda: task.auto_battle(interval_ms=-1),
+    )
+    assert_value_error(
+        "duration_ms must be greater than or equal to 0",
+        lambda: task.turn_battle_skill_page(duration_ms=-1),
+    )
+    assert_value_error(
+        "duration_ms must be greater than or equal to 0",
+        lambda: task.walk_forward(duration_ms=-1),
+    )
+    assert_value_error("Unsupported walk direction: up", lambda: task.walk("up"))
 
 
 def test_bangpai_task_steps_include_sidebar_execution_after_accept():

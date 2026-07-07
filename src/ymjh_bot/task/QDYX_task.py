@@ -12,7 +12,7 @@ from ymjh_bot.ym_game_task import YmGameTask
 class StartTask(YmGameTask):
     """一梦江湖启动任务。"""
 
-    task_key = "launch"
+    task_key = "QDYX"
     task_name = "启动游戏"
     task_description = "启动游戏任务"
     task_visible = False

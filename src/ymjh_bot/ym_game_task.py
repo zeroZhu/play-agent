@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from botCore import GameTask
+from botCore.coords import scale_point
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -53,11 +55,13 @@ class YmGameTask(GameTask):
     BTN_TRJH = str(TEMPLATES_DIR / "btn_TRJH.png")
     BTN_ZZDL = str(TEMPLATES_DIR / "btn_ZZDL.png")
     BTN_BIAOQING = str(TEMPLATES_DIR / "btn_biaoqing.png")
+    BTN_CHAT_SEND = str(TEMPLATES_DIR / "btn_chat_send.png")
     ICON_TASK_ACTIVE = str(TEMPLATES_DIR / "icon_task_active.png")
     ICON_TASK_RW = str(TEMPLATES_DIR / "icon_task_rw.png")
     ICON_TASK_JH = str(TEMPLATES_DIR / "icon_task_jh.png")
     ICON_TASK_QY = str(TEMPLATES_DIR / "icon_task_qy.png")
     TEXT_AUTO_PATH = str(TEMPLATES_DIR / "text_zidongxunlu.png")
+    TEXT_POWER_SAVING = str(TEMPLATES_DIR / "text_power_saving.png")
     TAB_BANGPAI_ACTIVE = str(TEMPLATES_DIR / "tab_bangpai_active.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
@@ -72,13 +76,31 @@ class YmGameTask(GameTask):
     POINT_EMOTION_MEDITATE = (725, 578)
     POINT_EMOTION_COLLAPSE = (934, 503)
     POINT_LIGHTNESS = (1240, 420)
+    POINT_CHAT_COLLAPSE_ARROW = (680, 356)
+    POINT_DIRECTION_JOYSTICK_CENTER = (105, 455)
+    POINT_BATTLE_NORMAL_ATTACK = (1135, 553)
+    POINT_RIGHT_JOYSTICK_CENTER = POINT_BATTLE_NORMAL_ATTACK
+    POINT_BATTLE_SKILL_BUTTONS = (
+        (1118, 389),
+        (1022, 449),
+        (995, 559),
+        (933, 651),
+        (1055, 653),
+    )
+    DIRECTION_JOYSTICK_RADIUS = 70
+    BATTLE_PAGE_ROUND_COUNT = 4
 
     ROI_HEALTH_BAR = (74, 27, 260, 20)
     ROI_BIAOQING_BUTTON = (330, 650, 90, 70)
+    ROI_CHAT_SEND_BUTTON = (500, 640, 160, 80)
+    ROI_POWER_SAVING = (480, 470, 340, 140)
+    ROI_CENTER_MODAL_OK = (730, 440, 250, 120)
     HEALTH_FULL_WIDTH = 255
     HEALTH_RECOVER_THRESHOLD = 0.80
     HEALTH_FULL_THRESHOLD = 0.90
     HEALTH_COLUMN_MIN_FILL_RATIO = 0.30
+    HEALTH_ANCHOR_START_COLUMN = 8
+    HEALTH_ANCHOR_END_COLUMN = 26
     HEALTH_RECOVER_TIMEOUT_MS = 300000
     HEALTH_RECOVER_POLL_INTERVAL_MS = 2000
     HEALTH_RED_MIN_VALUE = 120
@@ -98,6 +120,21 @@ class YmGameTask(GameTask):
     LOGIN_WAIT_AFTER_CLICK_MS = 1500
     LOGIN_WAIT_AFTER_CLOSE_MS = 800
 
+    WALK_DIRECTIONS = {
+        "forward": (0, -1),
+        "backward": (0, 1),
+        "left": (-1, 0),
+        "right": (1, 0),
+        "前": (0, -1),
+        "后": (0, 1),
+        "左": (-1, 0),
+        "右": (1, 0),
+        "向前": (0, -1),
+        "向后": (0, 1),
+        "向左": (-1, 0),
+        "向右": (1, 0),
+    }
+
     def __init__(self, default_interval_ms: int | None = None):
         super().__init__(default_interval_ms=default_interval_ms)
         self._recovering_health = False
@@ -111,6 +148,171 @@ class YmGameTask(GameTask):
         """Run shared Yi Meng Jiang Hu guards before each task step."""
         super().before_step(step_name, step_meta)
         self.recover_health_if_needed()
+
+    def refresh_screen_resolution(self) -> None:
+        """Refresh the cached screen resolution from the latest screenshot."""
+        screenshot = self.screenshot()
+        height, width = screenshot.shape[:2]
+        resolution = (width, height)
+        if self._screen_resolution != resolution:
+            self._log(f"刷新截图分辨率：{resolution}")
+            self._screen_resolution = resolution
+
+    def is_power_saving_mode(self) -> bool:
+        """Return whether the current game view is the power-saving overlay."""
+        return self.find_image(
+            self.TEXT_POWER_SAVING,
+            threshold=0.8,
+            roi=self.scale_roi(self.ROI_POWER_SAVING),
+        )
+
+    def wake_from_power_saving_if_needed(self) -> bool:
+        """Wake the game from power-saving mode by tapping the lower-right joystick center."""
+        if not self.is_power_saving_mode():
+            return False
+
+        self._log("检测到省电模式，点击右下角摇杆中心唤醒")
+        self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
+        self.wait(1000)
+        self.refresh_screen_resolution()
+        return True
+
+    def wake_foreground_screen_once(self) -> None:
+        """Try to wake an unrecognized foreground game scene without entering login flow."""
+        self._log("前台画面未识别，点击右下角摇杆中心尝试唤醒")
+        self.click_point(self.POINT_RIGHT_JOYSTICK_CENTER[0], self.POINT_RIGHT_JOYSTICK_CENTER[1], offset=0)
+        self.wait(1000)
+        self.refresh_screen_resolution()
+
+    def is_chat_open(self) -> bool:
+        """Return whether the chat panel is expanded."""
+        return self.find_image(
+            self.BTN_CHAT_SEND,
+            threshold=0.9,
+            roi=self.scale_roi(self.ROI_CHAT_SEND_BUTTON),
+        )
+
+    def collapse_chat_if_open(self, wait_after_click_ms: int = 800) -> bool:
+        """Collapse the expanded chat panel when the Send button is visible."""
+        if not self.is_chat_open():
+            return False
+
+        self._log("检测到聊天框展开，点击箭头收起")
+        self.click_point(self.POINT_CHAT_COLLAPSE_ARROW[0], self.POINT_CHAT_COLLAPSE_ARROW[1], offset=0)
+        self.wait(wait_after_click_ms)
+        return True
+
+    def walk(self, direction: str, duration_ms: int = 500) -> None:
+        """Drag the lower-left movement joystick in the requested direction."""
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be greater than or equal to 0")
+
+        vector = self.WALK_DIRECTIONS.get(direction)
+        if vector is None:
+            raise ValueError(f"Unsupported walk direction: {direction}")
+
+        if not self.is_game_main_ready():
+            raise RuntimeError("当前不是干净主界面，禁止移动")
+
+        start = self.POINT_DIRECTION_JOYSTICK_CENTER
+        end = (
+            start[0] + vector[0] * self.DIRECTION_JOYSTICK_RADIUS,
+            start[1] + vector[1] * self.DIRECTION_JOYSTICK_RADIUS,
+        )
+        current_resolution = self._screen_resolution or self.design_resolution
+        scaled_start = scale_point(start, self.design_resolution, current_resolution)
+        scaled_end = scale_point(end, self.design_resolution, current_resolution)
+        self.swipe(scaled_start[0], scaled_start[1], scaled_end[0], scaled_end[1], duration_ms=duration_ms)
+
+    def walk_forward(self, duration_ms: int = 500) -> None:
+        """Walk forward by dragging the movement joystick upward."""
+        self.walk("forward", duration_ms=duration_ms)
+
+    def walk_backward(self, duration_ms: int = 500) -> None:
+        """Walk backward by dragging the movement joystick downward."""
+        self.walk("backward", duration_ms=duration_ms)
+
+    def walk_left(self, duration_ms: int = 500) -> None:
+        """Walk left by dragging the movement joystick leftward."""
+        self.walk("left", duration_ms=duration_ms)
+
+    def walk_right(self, duration_ms: int = 500) -> None:
+        """Walk right by dragging the movement joystick rightward."""
+        self.walk("right", duration_ms=duration_ms)
+
+    def auto_battle(
+        self,
+        skill_pages: int = 2,
+        repeat_count: int = 3,
+        interval_ms: int = 500,
+    ) -> None:
+        """Cycle normal attacks and battle skills by page, then return to the first page."""
+        if skill_pages < 1:
+            raise ValueError("skill_pages must be at least 1")
+        if repeat_count < 1:
+            raise ValueError("repeat_count must be at least 1")
+        if interval_ms < 0:
+            raise ValueError("interval_ms must be greater than or equal to 0")
+
+        self.refresh_screen_resolution()
+        self._log(
+            f"开始自动战斗：技能页 {skill_pages} 页，每页循环 {self.BATTLE_PAGE_ROUND_COUNT} 轮，"
+            f"每个按钮点击 {repeat_count} 次"
+        )
+
+        for page_index in range(skill_pages):
+            for _ in range(self.BATTLE_PAGE_ROUND_COUNT):
+                self._tap_battle_button(self.POINT_BATTLE_NORMAL_ATTACK, repeat_count, interval_ms)
+                for skill_point in self.POINT_BATTLE_SKILL_BUTTONS:
+                    self._tap_battle_button(skill_point, repeat_count, interval_ms)
+
+            if page_index < skill_pages - 1:
+                self.turn_battle_skill_page()
+                self.wait(interval_ms)
+
+        if skill_pages > 1:
+            self.turn_battle_skill_page()
+            self.wait(interval_ms)
+
+        self._log("自动战斗点击完成")
+
+    def turn_battle_skill_page(self, degrees: float = 60, duration_ms: int = 350) -> None:
+        """Turn the battle skill wheel from the top skill toward the lower-left page gesture."""
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be greater than or equal to 0")
+
+        start = self.POINT_BATTLE_SKILL_BUTTONS[0]
+        end = self._rotate_point(start, self.POINT_BATTLE_NORMAL_ATTACK, -degrees)
+        current_resolution = self._screen_resolution or self.design_resolution
+        scaled_start = scale_point(start, self.design_resolution, current_resolution)
+        scaled_end = scale_point(end, self.design_resolution, current_resolution)
+        self.swipe(scaled_start[0], scaled_start[1], scaled_end[0], scaled_end[1], duration_ms=duration_ms)
+
+    def _tap_battle_button(
+        self,
+        point: tuple[int, int],
+        repeat_count: int,
+        interval_ms: int,
+    ) -> None:
+        for _ in range(repeat_count):
+            self.click_point(point[0], point[1], offset=0)
+            self.wait(interval_ms)
+
+    @staticmethod
+    def _rotate_point(
+        point: tuple[int, int],
+        center: tuple[int, int],
+        degrees: float,
+    ) -> tuple[int, int]:
+        radians = math.radians(degrees)
+        point_x, point_y = point
+        center_x, center_y = center
+        dx = point_x - center_x
+        dy = point_y - center_y
+        return (
+            int(round(center_x + dx * math.cos(radians) - dy * math.sin(radians))),
+            int(round(center_y + dx * math.sin(radians) + dy * math.cos(radians))),
+        )
 
     def detect_health_ratio(self) -> float | None:
         """Return the visible HP bar fill ratio, or None when it cannot be read."""
@@ -133,7 +335,9 @@ class YmGameTask(GameTask):
             return None
 
         red_columns = self._red_health_columns(region)
-        filled_width = self._longest_true_run(red_columns)
+        filled_width = self._anchored_true_run(red_columns)
+        if filled_width <= 0:
+            return None
         full_width = max(
             1,
             int(round(self.HEALTH_FULL_WIDTH * screen_width / self.design_resolution[0])),
@@ -143,6 +347,15 @@ class YmGameTask(GameTask):
     def recover_health_if_needed(self) -> None:
         """Meditate until HP is full when the main-scene HP bar is low."""
         if not self.auto_recover_health or self._recovering_health:
+            return
+
+        self.collapse_chat_if_open()
+        if not self.find_image(
+            self.BTN_BIAOQING,
+            threshold=0.9,
+            roi=self.scale_roi(self.ROI_BIAOQING_BUTTON),
+        ):
+            self._log("未找到主界面表情按钮，跳过自动打坐")
             return
 
         try:
@@ -160,17 +373,6 @@ class YmGameTask(GameTask):
         self._recovering_health = True
         try:
             self._log(f"检测到血量较低：{health_ratio:.1%}，开始打坐恢复")
-            if not self.wait_find_image_in_roi(
-                self.BTN_BIAOQING,
-                self.ROI_BIAOQING_BUTTON,
-                timeout_ms=3000,
-                description="表情按钮",
-                threshold=0.9,
-                interval_ms=300,
-            ):
-                self._log("未找到主界面表情按钮，跳过自动打坐")
-                return
-
             self.click(0)
             self.wait(800)
             self.click_point(self.POINT_EMOTION_SINGLE_TAB[0], self.POINT_EMOTION_SINGLE_TAB[1], offset=0)
@@ -213,6 +415,23 @@ class YmGameTask(GameTask):
         )
         min_pixels = max(1, int(round(region.shape[0] * self.HEALTH_COLUMN_MIN_FILL_RATIO)))
         return red_mask.sum(axis=0) >= min_pixels
+
+    def _anchored_true_run(self, values: np.ndarray) -> int:
+        anchor_start = int(round(self.HEALTH_ANCHOR_START_COLUMN * len(values) / self.ROI_HEALTH_BAR[2]))
+        anchor_end = int(round(self.HEALTH_ANCHOR_END_COLUMN * len(values) / self.ROI_HEALTH_BAR[2]))
+        best = 0
+        current = 0
+        start = 0
+        for index, value in enumerate(values):
+            if bool(value):
+                if current == 0:
+                    start = index
+                current += 1
+                if start <= anchor_end and index >= anchor_start:
+                    best = max(best, current)
+            else:
+                current = 0
+        return best
 
     @staticmethod
     def _longest_true_run(values: np.ndarray) -> int:
@@ -293,9 +512,22 @@ class YmGameTask(GameTask):
     def ensure_game_started(self, *, force: bool = False) -> None:
         """Start and enter the game when it is not ready in the foreground."""
         if not force and self.is_game_foreground():
-            if self.is_game_main_ready():
+            woke_from_power_saving = self.wake_from_power_saving_if_needed()
+            if woke_from_power_saving and self.is_game_main_ready():
                 self._log("检测到游戏已在前台，跳过启动")
                 return
+
+            state = self.detect_login_state(include_modal_controls=True)
+            if state and state.name == self.LOGIN_STATE_MAIN:
+                self._log("检测到游戏已在前台，跳过启动")
+                return
+
+            if state is None and not woke_from_power_saving:
+                self.wake_foreground_screen_once()
+                if self.is_game_main_ready():
+                    self._log("检测到游戏已在前台，跳过启动")
+                    return
+
             self._log("检测到游戏在前台但未进入主界面，继续进入游戏")
         else:
             self.start_game_app()
@@ -478,10 +710,56 @@ class YmGameTask(GameTask):
     ) -> None:
         """Close visible panels by repeatedly tapping known close buttons."""
         targets = templates or [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+        self.collapse_chat_if_open()
         while self.wait_image_appear(targets, timeout_ms=timeout_ms):
             self.click()
             self.wait(wait_after_click_ms)
+        self.collapse_chat_if_open()
         self._log("已关闭所有弹窗")
+
+    def find_image_once(
+        self,
+        template: str | list[str],
+        *,
+        threshold: float = 0.8,
+        roi: tuple[int, int, int, int] | None = None,
+        log_found: bool = False,
+        log_missing: bool = False,
+    ) -> bool:
+        """Check one screenshot without producing repeated wait-loop noise."""
+        templates = [template] if isinstance(template, str) else template
+        match = self._vision.match_template(self.screenshot(), templates, threshold=threshold, roi=roi)
+        self._last_match_score = match.score
+        if match.found and match.center:
+            self._last_match_center = match.center
+            if log_found:
+                self._log(f"Found image: {template} (score={match.score:.3f})")
+            return True
+
+        self._last_match_center = None
+        if log_missing:
+            self._log(f"Image not found: {template} (score={match.score:.3f})")
+        return False
+
+    def confirm_match_leave_team_dialog_if_needed(
+        self,
+        activity_name: str,
+        *,
+        wait_after_click_ms: int = 1200,
+        threshold: float = 0.85,
+    ) -> bool:
+        """Confirm the PvP prompt that asks whether to leave the current team."""
+        if not self.find_image_once(
+            self.BTN_MODAL_OK,
+            threshold=threshold,
+            roi=self.scale_roi(self.ROI_CENTER_MODAL_OK),
+        ):
+            return False
+
+        self._log(f"检测到{activity_name}单人匹配退队确认，点击确定")
+        self.click(offset=0)
+        self.wait(wait_after_click_ms)
+        return True
 
     def open_activity_panel(
         self,

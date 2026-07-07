@@ -28,7 +28,7 @@ uv run --no-sync python launch_gui.py
 Run a Python DSL task from the CLI:
 
 ```powershell
-uv run --no-sync python -m game_bot.run --task src/ymjh_bot/task/start.py
+uv run --no-sync python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py
 ```
 
 ## DSL Example

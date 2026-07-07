@@ -5,7 +5,7 @@ import pytest
 from botCore import load_task_class
 from botCore.task import StepJumpException
 from botCore.vision import load_image
-from ymjh_bot.task.menke_sheyan import MenkeSheyanTask
+from ymjh_bot.task.MKSY_task import MenkeSheyanTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 
 
@@ -125,13 +125,13 @@ class ScreenshotMenkeSheyanTask(MenkeSheyanTask):
 
 
 def test_menke_sheyan_task_loads_and_is_visible():
-    task_file = Path("src/ymjh_bot/task/menke_sheyan.py")
+    task_file = Path("src/ymjh_bot/task/MKSY_task.py")
 
     task_cls = load_task_class(task_file)
 
     assert task_cls.__name__ == "MenkeSheyanTask"
     assert is_visible_task_class(task_cls)
-    assert task_cls.task_key == "mksy"
+    assert task_cls.task_key == "MKSY"
     assert task_cls.task_name == "门客设宴"
 
 

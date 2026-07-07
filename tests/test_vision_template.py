@@ -200,6 +200,57 @@ def test_pozhen_sheyan_templates_match_reference_screenshots():
         assert result.score >= threshold
 
 
+def test_jhyxb_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    activity_fenzheng = "\u6d3b\u52a8-\u7eb7\u4e89"
+    jhyxb = "\u6c5f\u6e56\u82f1\u96c4\u699c"
+    cases = [
+        (
+            root / "screenshots" / f"{activity_fenzheng}.png",
+            root / "src/ymjh_bot/templates/btn_jhyxb_activity_open.png",
+            (720, 500, 240, 120),
+            0.95,
+        ),
+        (
+            root / "screenshots" / f"{jhyxb}.png",
+            root / "src/ymjh_bot/templates/title_jhyxb.png",
+            (170, 45, 260, 75),
+            0.95,
+        ),
+        (
+            root / "screenshots" / f"{jhyxb}.png",
+            root / "src/ymjh_bot/templates/btn_jhyxb_match.png",
+            (950, 520, 230, 120),
+            0.95,
+        ),
+        (
+            root / "screenshots" / f"{jhyxb}.png",
+            root / "src/ymjh_bot/templates/icon_jhyxb_first_chest.png",
+            (385, 545, 95, 75),
+            0.95,
+        ),
+        (
+            root / "screenshots" / f"{jhyxb}-\u51c6\u5907.png",
+            root / "src/ymjh_bot/templates/btn_jhyxb_ready.png",
+            (520, 40, 240, 120),
+            0.95,
+        ),
+        (
+            root / "screenshots" / "jhyxb_debug_after_timeout.png",
+            root / "src/ymjh_bot/templates/text_jhyxb_challenge_zero.png",
+            (880, 560, 60, 55),
+            0.95,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is True
+        assert result.score >= threshold
+
+
 def test_bangpai_templates_match_reference_screenshots():
     root = Path(__file__).resolve().parents[1]
     menke_prefix = "\u95e8\u5ba2\u8bbe\u5bb4"
@@ -247,7 +298,7 @@ def test_bangpai_templates_match_reference_screenshots():
             0.95,
         ),
         (
-            root / "screenshots" / "bangpai_debug_after_full_run_start_fail.png",
+            root / "screenshots" / "bangpai_debug_before_full_run.png",
             root / "src/ymjh_bot/templates/text_power_saving.png",
             (480, 470, 340, 140),
             0.95,
@@ -266,3 +317,85 @@ def test_bangpai_templates_match_reference_screenshots():
 
         assert result.found is True
         assert result.score >= threshold
+
+
+def test_kyrw_templates_match_reference_screenshots():
+    root = Path(__file__).resolve().parents[1]
+    kyrw_dir = root / "screenshots" / "kyrw_wuchan_20260707"
+    cases = [
+        (
+            kyrw_dir / "01_activity_jianghu_wuchan_entry.png",
+            root / "src/ymjh_bot/templates/btn_kyrw_activity_wuchan_forward.png",
+            (120, 210, 220, 115),
+            0.95,
+        ),
+        (
+            kyrw_dir / "03_wuchan_detail_course_forward.png",
+            root / "src/ymjh_bot/templates/btn_kyrw_panel_course_forward.png",
+            (175, 440, 205, 110),
+            0.95,
+        ),
+        (
+            kyrw_dir / "09_npc_puzhao_wuchan_button.png",
+            root / "src/ymjh_bot/templates/btn_kyrw_npc_wuchan.png",
+            (900, 400, 360, 130),
+            0.95,
+        ),
+        (
+            kyrw_dir / "36_manual_accept_current_state.png",
+            root / "src/ymjh_bot/templates/text_kyrw_course_sidebar.png",
+            (40, 135, 330, 430),
+            0.95,
+        ),
+        (
+            kyrw_dir / "26_single_tap_wuchanchang_toast.png",
+            root / "src/ymjh_bot/templates/text_kyrw_existing_course_toast.png",
+            (450, 300, 420, 90),
+            0.95,
+        ),
+        (
+            kyrw_dir / "46_stage_5_acquire_route_mall.png",
+            root / "src/ymjh_bot/templates/route_kyrw_mall.png",
+            (330, 120, 880, 520),
+            0.95,
+        ),
+        (
+            kyrw_dir / "49_after_buy_18_humabing.png",
+            root / "src/ymjh_bot/templates/btn_kyrw_one_key_submit.png",
+            (900, 330, 340, 160),
+            0.95,
+        ),
+        (
+            kyrw_dir / "51_course_complete_dialog.png",
+            root / "src/ymjh_bot/templates/text_kyrw_complete.png",
+            (350, 250, 600, 220),
+            0.95,
+        ),
+        (
+            kyrw_dir / "40_course_path_or_dialog.png",
+            root / "src/ymjh_bot/templates/btn_kyrw_dialog_next.png",
+            (1180, 640, 100, 80),
+            0.95,
+        ),
+    ]
+
+    engine = VisionEngine()
+    for screenshot_path, template_path, roi, threshold in cases:
+        result = engine.match_template(load_image(screenshot_path), str(template_path), threshold=threshold, roi=roi)
+
+        assert result.found is True
+        assert result.score >= threshold
+
+
+def test_kyrw_reuses_bangpai_stall_route_template():
+    root = Path(__file__).resolve().parents[1]
+    engine = VisionEngine()
+    result = engine.match_template(
+        load_image(root / "screenshots" / "bangpai_debug_after_sidebar_click.png"),
+        str(root / "src/ymjh_bot/templates/route_bangpai_stall.png"),
+        threshold=0.95,
+        roi=(720, 120, 480, 500),
+    )
+
+    assert result.found is True
+    assert result.score >= 0.95

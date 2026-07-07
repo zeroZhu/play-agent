@@ -1,7 +1,7 @@
 import pytest
 
 from botCore.task import StepJumpException
-from ymjh_bot.task.bangpai import BangpaiTask
+from ymjh_bot.task.BPRW_task import BangpaiTask
 
 
 class FakeBangpaiTask(BangpaiTask):
@@ -36,6 +36,7 @@ class FakeBangpaiTask(BangpaiTask):
         self.auto_path_waits = []
         self.clicked_points = []
         self.click_count = 0
+        self.refresh_calls = 0
         self.wait_calls = []
         self.logs = []
 
@@ -65,6 +66,9 @@ class FakeBangpaiTask(BangpaiTask):
         if self.power_saving_results:
             return self.power_saving_results.pop(0)
         return False
+
+    def refresh_screen_resolution(self) -> None:
+        self.refresh_calls += 1
 
     def close_completion_dialog_if_visible(self) -> bool:
         self.completion_dialog_calls += 1
@@ -134,13 +138,16 @@ def test_close_all_wakes_only_when_power_saving_mode_is_visible():
 
     task.close_all()
 
-    assert task.clicked_points == [(task.POINT_WAKE_SCREEN[0], task.POINT_WAKE_SCREEN[1], 0)]
+    assert task.clicked_points == [
+        (task.POINT_RIGHT_JOYSTICK_CENTER[0], task.POINT_RIGHT_JOYSTICK_CENTER[1], 0)
+    ]
     assert task.close_panel_calls == [
         (None, 5000, 500),
         (None, 5000, 500),
     ]
     assert task.completion_dialog_calls == 2
-    assert "检测到省电模式，点击游戏画面唤醒" in task.logs
+    assert task.refresh_calls == 1
+    assert "检测到省电模式，点击右下角摇杆中心唤醒" in task.logs
 
 
 def test_close_all_does_not_wake_when_power_saving_mode_is_missing():

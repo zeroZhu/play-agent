@@ -9,7 +9,7 @@ from ymjh_bot.ym_game_task import YmGameTask
 class MenkeSheyanTask(BanquetAcquireMixin, YmGameTask):
     """一梦江湖门客设宴任务。"""
 
-    task_key = "mksy"
+    task_key = "MKSY"
     task_name = "门客设宴"
     task_description = "门客设宴自动邀约"
 

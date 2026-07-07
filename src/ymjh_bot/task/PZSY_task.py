@@ -9,7 +9,7 @@ from ymjh_bot.ym_game_task import YmGameTask
 class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
     """一梦江湖破阵设宴任务。"""
 
-    task_key = "pzsy"
+    task_key = "PZSY"
     task_name = "破阵设宴"
     task_description = "破阵设宴自动邀约"
 
@@ -56,8 +56,7 @@ class PozhenSheyanTask(BanquetAcquireMixin, YmGameTask):
     def before_start(self) -> None:
         """Wake the game from power-saving mode before the common startup guard."""
         if self.is_game_foreground() and self.detect_login_state(include_modal_controls=True) is None:
-            self.click_point(self.POINT_WAKE_SCREEN[0], self.POINT_WAKE_SCREEN[1], offset=0)
-            self.wait(1000)
+            self.wake_from_power_saving_if_needed()
         super().before_start()
 
     def on_start(self) -> None:

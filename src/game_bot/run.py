@@ -2,10 +2,10 @@
 
 Usage:
     # 运行 Python DSL 任务
-    python -m game_bot.run --task src/ymjh_bot/task/start.py
+    python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py
 
     # 指定设备
-    python -m game_bot.run --task src/ymjh_bot/task/start.py --serial 127.0.0.1:5555
+    python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py --serial 127.0.0.1:5555
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ from .models import ExecutionResult
 
 class RunLogger:
     def __init__(self, base_dir: str | Path = "logs") -> None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.run_dir = Path(base_dir) / f"run_{ts}"
         self.shots_dir = self.run_dir / "shots"
         self.events_path = self.run_dir / "events.jsonl"

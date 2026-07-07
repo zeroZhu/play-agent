@@ -1,0 +1,463 @@
+"""江湖英雄榜任务 - Python DSL 实现。"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+
+from botCore import step
+from botCore.coords import scale_point
+
+from ymjh_bot.ym_game_task import YmGameTask
+
+
+class JianghuYingxiongbangTask(YmGameTask):
+    """一梦江湖江湖英雄榜任务。"""
+
+    task_key = "JHYXB"
+    task_name = "江湖英雄榜"
+    task_description = "江湖英雄榜匹配并领取首战宝箱"
+    auto_recover_health = False
+
+    BTN_JHYXB_ACTIVITY_OPEN = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_activity_open.png")
+    BTN_JHYXB_MATCH = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_match.png")
+    TITLE_JHYXB = str(YmGameTask.TEMPLATES_DIR / "title_jhyxb.png")
+    ICON_JHYXB_FIRST_CHEST = str(YmGameTask.TEMPLATES_DIR / "icon_jhyxb_first_chest.png")
+    TEXT_JHYXB_CHALLENGE_ZERO = str(YmGameTask.TEMPLATES_DIR / "text_jhyxb_challenge_zero.png")
+    BTN_JHYXB_READY = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_ready.png")
+    BTN_JHYXB_RESULT_EXIT = str(YmGameTask.TEMPLATES_DIR / "btn_jhyxb_result_exit.png")
+
+    # 固定坐标点 (设计分辨率 1280x720 下)
+    POINT_HUODONG_FENZHENG = (462, 680)
+    POINT_JHYXB_MATCH = (1076, 584)
+    POINT_FIRST_BATTLE_CHEST = (433, 585)
+    POINT_JHYXB_READY = (640, 97)
+    POINT_DIRECTION_JOYSTICK_FORWARD = (105, 385)
+
+    ROI_ACTIVITY_JHYXB = (720, 500, 240, 120)
+    ROI_PANEL_TITLE = (170, 45, 260, 75)
+    ROI_MATCH_BUTTON = (950, 520, 230, 120)
+    ROI_FIRST_BATTLE_CHEST = (385, 545, 95, 75)
+    ROI_CHALLENGE_ZERO = (880, 560, 60, 55)
+    ROI_READY_BUTTON = (520, 40, 240, 120)
+    ROI_RESULT_EXIT_BUTTON = (380, 420, 520, 240)
+    ROI_PURCHASE_DIALOG_CLOSE = (850, 130, 140, 100)
+
+    DEFAULT_CHALLENGE_COUNT = 5
+    CLOSE_ALL_MAX_ATTEMPTS = 12
+    SINGLE_MATCH_TIMEOUT_MS = 480000
+    READY_TIMEOUT_MS = 120000
+    RESULT_TIMEOUT_MS = 420000
+    MATCH_POLL_INTERVAL_MS = 3000
+    MATCH_SETTLE_WAIT_MS = 2500
+    MATCH_READY_TIMEOUT_MS = SINGLE_MATCH_TIMEOUT_MS
+    MATCH_WAIT_POLL_INTERVAL_MS = 1000
+    MATCH_WAIT_HEARTBEAT_MS = 10000
+    BATTLE_FORWARD_MS = 3000
+    AUTO_BATTLE_INTERVAL_MS = 150
+    MATCH_READY_STATE_READY = "ready"
+    BATTLE_FINISH_RESULT_PANEL = "result_panel"
+    BATTLE_FINISH_RETURNED_PANEL = "jhyxb_panel"
+
+    def before_start(self) -> None:
+        """Let close_all wake foreground power-saving mode before normal task steps."""
+        if not self.auto_ensure_game_started:
+            return
+        if self.is_game_foreground():
+            self._log("检测到游戏已在前台，省电唤醒交给 close_all")
+            return
+        self.ensure_game_started()
+
+    def on_start(self) -> None:
+        """任务开始前准备。"""
+        self._log("=" * 40)
+        self._log("江湖英雄榜任务开始")
+        self._log("=" * 40)
+
+    @step(retry=1, timeout_ms=30000)
+    def close_all(self) -> None:
+        """关闭所有弹窗，回到游戏主界面。"""
+        self.refresh_screen_resolution()
+        self.close_all_panels_for_jhyxb()
+        if self.wake_from_power_saving_if_needed():
+            self.close_all_panels_for_jhyxb()
+        self.wait(1000)
+
+    @step(retry=3, timeout_ms=30000)
+    def open_fenzheng_activity(self) -> None:
+        """打开活动界面并切换到纷争页签。"""
+        self.open_fenzheng_activity_panel()
+
+    @step(retry=3, timeout_ms=30000)
+    def open_jhyxb_panel(self) -> None:
+        """点击江湖英雄榜入口，打开英雄榜面板。"""
+        self.open_jhyxb_from_activity()
+
+    @step(retry=0, timeout_ms=DEFAULT_CHALLENGE_COUNT * SINGLE_MATCH_TIMEOUT_MS + 60000)
+    def use_all_challenges(self) -> None:
+        """点击匹配按钮，默认消耗 5 次挑战次数。"""
+        for index in range(1, self.DEFAULT_CHALLENGE_COUNT + 1):
+            self._log(f"开始第 {index}/{self.DEFAULT_CHALLENGE_COUNT} 次江湖英雄榜匹配")
+            self.ensure_jhyxb_panel_ready(timeout_ms=10000)
+            if self.is_challenge_count_zero():
+                self._log("检测到江湖英雄榜挑战次数已用完，停止匹配循环")
+                return
+            self.click_match_button()
+            self.run_match_battle(index)
+
+    @step(retry=1, timeout_ms=60000)
+    def claim_first_battle_chest(self) -> None:
+        """领取每日首战宝箱奖励。"""
+        self.ensure_jhyxb_panel_ready(timeout_ms=10000)
+
+        if self.wait_find_image_in_roi(
+            self.ICON_JHYXB_FIRST_CHEST,
+            self.ROI_FIRST_BATTLE_CHEST,
+            timeout_ms=3000,
+            description="每日首战宝箱",
+            threshold=0.85,
+        ):
+            self._log("点击每日首战宝箱")
+            self.click(offset=0)
+        else:
+            self._log("未识别到每日首战宝箱模板，使用固定坐标点击")
+            self.click_point(self.POINT_FIRST_BATTLE_CHEST[0], self.POINT_FIRST_BATTLE_CHEST[1], offset=0)
+
+        self.wait(1500)
+        self.close_reward_dialogs(max_attempts=1, include_close_buttons=False)
+
+    def open_fenzheng_activity_panel(self) -> None:
+        """Open the activity panel and switch to the Fen Zheng tab."""
+        self.refresh_screen_resolution()
+        self.open_activity_panel(
+            self.POINT_HUODONG_FENZHENG,
+            "纷争",
+            wait_after_open_ms=2500,
+            wait_after_category_ms=1500,
+        )
+
+    def refresh_screen_resolution(self) -> None:
+        """Refresh resolution from the latest screenshot after game orientation changes."""
+        screenshot = self.screenshot()
+        height, width = screenshot.shape[:2]
+        resolution = (width, height)
+        if self._screen_resolution != resolution:
+            self._log(f"刷新截图分辨率：{resolution}")
+            self._screen_resolution = resolution
+
+    def open_jhyxb_from_activity(self) -> None:
+        """Click the Jianghu Yingxiongbang entry from Activity - Fen Zheng."""
+        if not self.wait_find_image_in_roi(
+            self.BTN_JHYXB_ACTIVITY_OPEN,
+            self.ROI_ACTIVITY_JHYXB,
+            timeout_ms=5000,
+            description="活动页江湖英雄榜打开按钮",
+            threshold=0.85,
+        ):
+            raise RuntimeError("未找到活动页江湖英雄榜打开按钮")
+
+        self._log("点击活动页江湖英雄榜打开按钮")
+        self.click(offset=0)
+        self.wait(2000)
+
+        if not self.ensure_jhyxb_panel_visible(timeout_ms=5000):
+            raise RuntimeError("未进入江湖英雄榜面板")
+
+    def ensure_jhyxb_panel_ready(self, *, timeout_ms: int) -> None:
+        """Ensure the Jianghu Yingxiongbang panel is visible, reopening it if needed."""
+        if self.ensure_jhyxb_panel_visible(timeout_ms=timeout_ms):
+            return
+
+        self._log("江湖英雄榜面板不可见，尝试从主界面重新打开")
+        self.close_all_panels_for_jhyxb(timeout_ms=1500, max_attempts=6)
+        self.open_fenzheng_activity_panel()
+        self.open_jhyxb_from_activity()
+
+    def close_all_panels_for_jhyxb(
+        self,
+        *,
+        timeout_ms: int = 5000,
+        wait_after_click_ms: int = 500,
+        max_attempts: int | None = None,
+    ) -> None:
+        """Close overlays with a guard for the challenge purchase dialog."""
+        attempts = max_attempts or self.CLOSE_ALL_MAX_ATTEMPTS
+        targets = [self.BTN_CLOSE, self.BTN_PANE_CLOSE, self.BTN_WELCOME_CLOSE]
+
+        self.collapse_chat_if_open()
+        for _ in range(attempts):
+            if self.close_purchase_dialog_if_needed():
+                continue
+
+            if not self.wait_image_appear(targets, timeout_ms=timeout_ms):
+                self.collapse_chat_if_open()
+                self._log("已关闭所有弹窗")
+                return
+
+            self.click()
+            self.wait(wait_after_click_ms)
+
+        self.collapse_chat_if_open()
+        self._log(f"关闭弹窗达到上限 {attempts} 次，继续后续流程")
+
+    def close_purchase_dialog_if_needed(self) -> bool:
+        """Close the extra challenge purchase dialog without hitting the panel close button behind it."""
+        if not self.find_image(
+            [self.BTN_CLOSE, self.BTN_PANE_CLOSE],
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_PURCHASE_DIALOG_CLOSE),
+        ):
+            return False
+
+        self._log("关闭江湖英雄榜购买挑战次数弹窗")
+        self.click(offset=0)
+        self.wait(1000)
+        return True
+
+    def ensure_jhyxb_panel_visible(self, *, timeout_ms: int) -> bool:
+        """Wait for the Jianghu Yingxiongbang panel title."""
+        return self.wait_find_image_in_roi(
+            self.TITLE_JHYXB,
+            self.ROI_PANEL_TITLE,
+            timeout_ms=timeout_ms,
+            description="江湖英雄榜面板",
+            threshold=0.85,
+            interval_ms=500,
+        )
+
+    def is_jhyxb_panel_visible(self) -> bool:
+        """Return whether the Jianghu Yingxiongbang panel is currently visible."""
+        return self.find_image(
+            self.TITLE_JHYXB,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_PANEL_TITLE),
+        )
+
+    def click_match_button(self) -> None:
+        """Click the panel match button."""
+        if self.wait_find_image_in_roi(
+            self.BTN_JHYXB_MATCH,
+            self.ROI_MATCH_BUTTON,
+            timeout_ms=5000,
+            description="江湖英雄榜匹配按钮",
+            threshold=0.85,
+        ):
+            self._log("点击江湖英雄榜匹配按钮")
+            self.click(offset=0)
+        else:
+            self._log("未识别到匹配按钮模板，使用固定坐标点击")
+            self.click_point(self.POINT_JHYXB_MATCH[0], self.POINT_JHYXB_MATCH[1], offset=0)
+
+        self.wait(self.MATCH_SETTLE_WAIT_MS)
+        self.confirm_match_leave_team_dialog_if_needed("江湖英雄榜")
+
+    def is_challenge_count_zero(self) -> bool:
+        """Return whether the remaining challenge count is visibly zero."""
+        return self.find_image(
+            self.TEXT_JHYXB_CHALLENGE_ZERO,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_CHALLENGE_ZERO),
+        )
+
+    def run_match_battle(self, match_index: int) -> None:
+        """Run one matched Jianghu Yingxiongbang battle and return to the ranking panel."""
+        ready_state = self.click_ready_button(match_index)
+        if ready_state == self.MATCH_READY_STATE_READY:
+            self.walk_forward_for_battle(self.BATTLE_FORWARD_MS)
+            finish_state = self.wait_until_battle_complete(match_index)
+        else:
+            finish_state = ready_state
+
+        if finish_state == self.BATTLE_FINISH_RESULT_PANEL:
+            self.click_result_panel_exit()
+        else:
+            self._log(f"第 {match_index} 次战斗已回到江湖英雄榜面板，跳过结果面板退出点击")
+
+        if not self.ensure_jhyxb_panel_visible(timeout_ms=30000):
+            raise RuntimeError("战斗退出后未回到江湖英雄榜面板")
+
+    def click_ready_button(self, match_index: int) -> str:
+        """Wait for ready, matching completion, or a returned panel."""
+        deadline = self._make_deadline(self.MATCH_READY_TIMEOUT_MS)
+        last_heartbeat_at = 0.0
+
+        while not self._is_deadline_expired(deadline):
+            if self.confirm_match_leave_team_dialog_if_needed("江湖英雄榜"):
+                last_heartbeat_at = 0.0
+                continue
+
+            if self.is_ready_button_visible():
+                self._log("点击江湖英雄榜准备按钮")
+                self.click(offset=0)
+                self.wait(1000)
+                return self.MATCH_READY_STATE_READY
+
+            if self.is_result_panel_visible_quiet():
+                self._log(f"第 {match_index} 次匹配在等待准备时已出现结果面板")
+                return self.BATTLE_FINISH_RESULT_PANEL
+
+            if self.is_jhyxb_panel_visible_quiet():
+                if self.is_challenge_count_zero_quiet():
+                    self._log(f"第 {match_index} 次匹配后检测到挑战次数已用完")
+                    return self.BATTLE_FINISH_RETURNED_PANEL
+                if self.is_match_button_visible_quiet():
+                    self._log(f"第 {match_index} 次匹配已回到江湖英雄榜面板")
+                    return self.BATTLE_FINISH_RETURNED_PANEL
+
+            now = time.perf_counter()
+            if last_heartbeat_at <= 0 or (now - last_heartbeat_at) * 1000 >= self.MATCH_WAIT_HEARTBEAT_MS:
+                self._log(f"第 {match_index} 次江湖英雄榜匹配/准备等待中...")
+                last_heartbeat_at = now
+            self.wait(self.MATCH_WAIT_POLL_INTERVAL_MS)
+
+        debug_path = self.save_debug_screenshot(f"jhyxb_match_{match_index}_ready_timeout")
+        raise RuntimeError(f"第 {match_index} 次江湖英雄榜匹配/准备等待超时，已保存截图：{debug_path}")
+
+    def is_ready_button_visible(self) -> bool:
+        """Return whether the preparation button is visible without noisy miss logs."""
+        return self.find_image_once(
+            self.BTN_JHYXB_READY,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_READY_BUTTON),
+        )
+
+    def is_match_button_visible_quiet(self) -> bool:
+        """Return whether the panel has returned to a clickable match state."""
+        return self.find_image_once(
+            self.BTN_JHYXB_MATCH,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_MATCH_BUTTON),
+        )
+
+    def is_jhyxb_panel_visible_quiet(self) -> bool:
+        """Return whether the ranking panel is visible without noisy miss logs."""
+        return self.find_image_once(
+            self.TITLE_JHYXB,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_PANEL_TITLE),
+        )
+
+    def is_challenge_count_zero_quiet(self) -> bool:
+        """Return whether challenge count is zero without noisy miss logs."""
+        return self.find_image_once(
+            self.TEXT_JHYXB_CHALLENGE_ZERO,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_CHALLENGE_ZERO),
+        )
+
+    def is_result_panel_visible_quiet(self) -> bool:
+        """Return whether the result panel is visible without noisy miss logs."""
+        if not Path(self.BTN_JHYXB_RESULT_EXIT).exists():
+            return False
+        return self.find_image_once(
+            self.BTN_JHYXB_RESULT_EXIT,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_RESULT_EXIT_BUTTON),
+        )
+
+    def walk_forward_for_battle(self, duration_ms: int) -> None:
+        """Walk forward in battle without requiring the clean main-scene guard."""
+        self.refresh_screen_resolution()
+        current_resolution = self._screen_resolution or self.design_resolution
+        start = scale_point(self.POINT_DIRECTION_JOYSTICK_CENTER, self.design_resolution, current_resolution)
+        end = scale_point(self.POINT_DIRECTION_JOYSTICK_FORWARD, self.design_resolution, current_resolution)
+        self._log(f"江湖英雄榜战斗中向前走 {duration_ms}ms")
+        self.swipe(start[0], start[1], end[0], end[1], duration_ms=duration_ms)
+
+    def wait_until_battle_complete(self, match_index: int) -> str:
+        """Auto-battle until the result panel appears or the ranking panel returns."""
+        deadline = self._make_deadline(self.RESULT_TIMEOUT_MS)
+        missing_template_logged = False
+        while not self._is_deadline_expired(deadline):
+            if self.is_result_panel_visible():
+                self._log(f"第 {match_index} 次战斗结果面板已出现")
+                return self.BATTLE_FINISH_RESULT_PANEL
+
+            if self.is_jhyxb_panel_visible():
+                self._log(f"第 {match_index} 次战斗已返回江湖英雄榜面板")
+                return self.BATTLE_FINISH_RETURNED_PANEL
+
+            if not Path(self.BTN_JHYXB_RESULT_EXIT).exists() and not missing_template_logged:
+                self._log("结果面板退出按钮模板尚未生成，将持续自动战斗并在超时时保存截图")
+                missing_template_logged = True
+
+            self.auto_battle(skill_pages=1, repeat_count=1, interval_ms=self.AUTO_BATTLE_INTERVAL_MS)
+
+            if self.is_result_panel_visible():
+                self._log(f"第 {match_index} 次战斗结果面板已出现")
+                return self.BATTLE_FINISH_RESULT_PANEL
+
+            if self.is_jhyxb_panel_visible():
+                self._log(f"第 {match_index} 次战斗已返回江湖英雄榜面板")
+                return self.BATTLE_FINISH_RETURNED_PANEL
+
+        debug_path = self.save_debug_screenshot(f"jhyxb_result_{match_index}_timeout")
+        raise RuntimeError(f"第 {match_index} 次江湖英雄榜战斗结果等待超时，已保存截图：{debug_path}")
+
+    def is_result_panel_visible(self) -> bool:
+        """Return whether the post-battle result panel is visible."""
+        if not Path(self.BTN_JHYXB_RESULT_EXIT).exists():
+            return False
+        return self.find_image(
+            self.BTN_JHYXB_RESULT_EXIT,
+            threshold=0.85,
+            roi=self.scale_roi(self.ROI_RESULT_EXIT_BUTTON),
+        )
+
+    def click_result_panel_exit(self) -> None:
+        """Click the exit button inside the post-battle result panel."""
+        if not self.wait_find_image_in_roi(
+            self.BTN_JHYXB_RESULT_EXIT,
+            self.ROI_RESULT_EXIT_BUTTON,
+            timeout_ms=10000,
+            description="江湖英雄榜结果面板退出按钮",
+            threshold=0.85,
+        ):
+            raise RuntimeError("未找到江湖英雄榜结果面板退出按钮")
+
+        self._log("点击江湖英雄榜结果面板退出按钮")
+        self.click(offset=0)
+        self.wait(3000)
+
+    def close_reward_dialogs(self, max_attempts: int = 4, *, include_close_buttons: bool = True) -> bool:
+        """Close reward and confirmation dialogs if they appear."""
+        closed = False
+        for _ in range(max_attempts):
+            if self.wait_image_appear([self.BTN_MODAL_OK, self.BTN_OK], timeout_ms=800, threshold=0.85):
+                self._log("点击奖励/确认弹窗按钮")
+                self.click(offset=0)
+                self.wait(1000)
+                closed = True
+                continue
+
+            if not include_close_buttons:
+                break
+
+            if self.wait_image_appear([self.BTN_CLOSE, self.BTN_PANE_CLOSE], timeout_ms=800, threshold=0.8):
+                self._log("关闭奖励/临时弹窗")
+                self.click(offset=0)
+                self.wait(1000)
+                closed = True
+                continue
+
+            break
+
+        return closed
+
+    def save_debug_screenshot(self, prefix: str) -> str:
+        """Save the current screen for post-run debugging."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = self.TEMPLATES_DIR.parents[2] / "screenshots" / f"{prefix}_{timestamp}.png"
+        cv2.imwrite(str(path), self.screenshot())
+        self._log(f"已保存调试截图：{path}")
+        return str(path)
+
+    def on_finish(self, results: list) -> None:
+        """任务结束处理。"""
+        success_count = sum(1 for r in results if r.success)
+        self._log("=" * 40)
+        self._log(f"江湖英雄榜任务完成：{success_count}/{len(results)} 步骤成功")
+        self._log("=" * 40)

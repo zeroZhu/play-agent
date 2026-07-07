@@ -5,7 +5,7 @@ import pytest
 from botCore import load_task_class
 from botCore.task import StepJumpException
 from botCore.vision import load_image
-from ymjh_bot.task.pozhen_sheyan import PozhenSheyanTask
+from ymjh_bot.task.PZSY_task import PozhenSheyanTask
 from ymjh_bot.ui.task_queue_window import is_visible_task_class
 
 
@@ -107,13 +107,13 @@ class ScreenshotPozhenSheyanTask(PozhenSheyanTask):
 
 
 def test_pozhen_sheyan_task_loads_and_is_visible():
-    task_file = Path("src/ymjh_bot/task/pozhen_sheyan.py")
+    task_file = Path("src/ymjh_bot/task/PZSY_task.py")
 
     task_cls = load_task_class(task_file)
 
     assert task_cls.__name__ == "PozhenSheyanTask"
     assert is_visible_task_class(task_cls)
-    assert task_cls.task_key == "pzsy"
+    assert task_cls.task_key == "PZSY"
     assert task_cls.task_name == "破阵设宴"
 
 

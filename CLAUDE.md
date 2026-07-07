@@ -21,7 +21,7 @@
 
 ```bash
 # 运行 Python DSL 任务
-python -m game_bot.run --task src/ymjh_bot/task/start.py
+python -m game_bot.run --task src/ymjh_bot/task/QDYX_task.py
 
 # 开发调试 GUI
 python -m game_bot.main

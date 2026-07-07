@@ -9,7 +9,7 @@ from ymjh_bot.ym_game_task import YmGameTask
 class BangpaiTask(YmGameTask):
     """一梦江湖帮派任务。"""
 
-    task_key = "bangpai"
+    task_key = "BPRW"
     task_name = "帮派任务"
     task_description = "帮派任务自动执行"
 
@@ -23,7 +23,6 @@ class BangpaiTask(YmGameTask):
     BTN_VIEW_ALL_SERVER = str(YmGameTask.TEMPLATES_DIR / "btn_menke_view_all_server.png")
     BTN_ONE_KEY_SUBMIT = str(YmGameTask.TEMPLATES_DIR / "btn_bangpai_one_key_submit.png")
     BTN_BUY = str(YmGameTask.TEMPLATES_DIR / "btn_buy.png")
-    TEXT_POWER_SAVING = str(YmGameTask.TEMPLATES_DIR / "text_power_saving.png")
     TEXT_TASK_COMPLETE = str(YmGameTask.TEMPLATES_DIR / "text_bangpai_task_complete.png")
 
     # 固定坐标点 (设计分辨率 1280x720 下)
@@ -33,7 +32,6 @@ class BangpaiTask(YmGameTask):
     ROI_WAREHOUSE_SUBMIT = (760, 530, 230, 115)
     ROI_TRADE_ACTION = (520, 440, 330, 120)
     ROI_ONE_KEY_SUBMIT = (900, 330, 340, 160)
-    ROI_POWER_SAVING = (480, 470, 340, 140)
     ROI_TASK_COMPLETE = (40, 570, 650, 90)
     POINT_TASK_LIST_SCROLL_START = (190, 520)
     POINT_TASK_LIST_SCROLL_END = (190, 220)
@@ -62,10 +60,7 @@ class BangpaiTask(YmGameTask):
         """关闭所有弹窗，回到游戏主界面。"""
         self.close_all_panels()
         self.close_completion_dialog_if_visible()
-        if self.is_power_saving_mode():
-            self._log("检测到省电模式，点击游戏画面唤醒")
-            self.click_point(self.POINT_WAKE_SCREEN[0], self.POINT_WAKE_SCREEN[1], offset=0)
-            self.wait(1000)
+        if self.wake_from_power_saving_if_needed():
             self.close_all_panels()
             self.close_completion_dialog_if_visible()
 
@@ -230,14 +225,6 @@ class BangpaiTask(YmGameTask):
         end = scale_point(self.POINT_TASK_LIST_SCROLL_END, self.design_resolution, current_resolution)
         self.swipe(start[0], start[1], end[0], end[1], duration_ms=350)
         self.wait(800)
-
-    def is_power_saving_mode(self) -> bool:
-        """Return whether the current game view is the power-saving overlay."""
-        return self.find_image(
-            self.TEXT_POWER_SAVING,
-            threshold=0.8,
-            roi=self.scale_roi(self.ROI_POWER_SAVING),
-        )
 
     def close_completion_dialog_if_visible(self) -> bool:
         """Close the final Bangpai completion dialog when it is visible."""
